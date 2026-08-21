@@ -1,0 +1,79 @@
+// Self-Consistency Answer Engine — persistence layer.
+//
+// A `Run` is one user prompt fanned out across the model panel. Each panel
+// member produces a `Candidate`. A single `Synthesis` row holds the evaluator's
+// comparison of those candidates plus the final merged answer.
+
+datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated"
+}
+
+model Run {
+  id             String    @id @default(cuid())
+  prompt         String
+  /// PENDING | FANNING_OUT | SYNTHESIZING | COMPLETE | FAILED
+  status         String    @default("PENDING")
+  error          String?
+  temperature    Float?
+  totalLatencyMs Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  completedAt    DateTime?
+
+  candidates Candidate[]
+  synthesis  Synthesis?
+
+  @@index([createdAt])
+}
+
+model Candidate {
+  id    String @id @default(cuid())
+  runId String
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// openai | anthropic | google
+  provider String
+  label    String
+  model    String
+  /// PENDING | RUNNING | OK | ERROR | SKIPPED
+  status   String @default("PENDING")
+
+  content      String?
+  error        String?
+  latencyMs    Int?
+  inputTokens  Int?
+  outputTokens Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([runId, provider])
+  @@index([runId])
+}
+
+model Synthesis {
+  id    String @id @default(cuid())
+  runId String @unique
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  model       String
+  finalAnswer String
+  /// JSON-encoded string[] — claims every model converged on.
+  agreements  String  @default("[]")
+  /// JSON-encoded string[] — points of conflict and their resolution.
+  disagreements String @default("[]")
+  /// JSON-encoded CandidateReview[] — per-candidate scoring.
+  reviews     String  @default("[]")
+  confidence  Float   @default(0)
+
+  latencyMs    Int?
+  inputTokens  Int?
+  outputTokens Int?
+
+  createdAt DateTime @default(now())
+}

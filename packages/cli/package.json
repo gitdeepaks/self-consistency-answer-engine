@@ -1,0 +1,26 @@
+{
+  "name": "@sce/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sce": "./src/index.tsx"
+  },
+  "scripts": {
+    "dev": "bun --watch run src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "build": "bun build src/index.tsx --outdir dist --target bun --external '@opentui/core-*'",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.6",
+    "@opentui/react": "^0.5.6",
+    "@sce/server": "workspace:*",
+    "@sce/shared": "workspace:*",
+    "hono": "^4.13.3",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.8"
+  }
+}

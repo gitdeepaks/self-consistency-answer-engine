@@ -1,0 +1,28 @@
+{
+  "name": "@sce/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app": "./src/app.ts"
+  },
+  "scripts": {
+    "dev": "bun --watch run src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.40",
+    "@ai-sdk/google": "^4.0.49",
+    "@ai-sdk/openai": "^4.0.45",
+    "@hono/zod-validator": "^0.9.0",
+    "@sce/db": "workspace:*",
+    "@sce/shared": "workspace:*",
+    "ai": "^7.0.73",
+    "hono": "^4.13.3",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "packages/shared/src/**/*",
+    "packages/db/src/**/*",
+    "packages/server/src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/dist",
+    "packages/db/generated"
+  ]
+}

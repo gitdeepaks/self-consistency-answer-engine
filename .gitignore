@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.db
+*.db-journal
+*.sqlite
+.env
+.env.local
+!.env.example
+packages/db/generated/
+packages/db/prisma/*.db*
+.DS_Store
+*.tsbuildinfo

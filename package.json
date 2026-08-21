@@ -1,0 +1,30 @@
+{
+  "name": "self-consistency-answer-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "mkdir -p node_modules/.cache && concurrently --raw --kill-others --names api,cli \"bun run dev:server < /dev/null > node_modules/.cache/sce-server.log 2>&1\" \"bun run dev:cli\"",
+    "dev:server": "bun --watch run packages/server/src/index.ts",
+    "dev:cli": "bun --watch run packages/cli/src/index.tsx",
+    "dev:logs": "tail -f node_modules/.cache/sce-server.log",
+    "start": "bun run packages/server/src/index.ts",
+    "cli": "bun run packages/cli/src/index.tsx",
+    "ask": "bun run packages/cli/src/index.tsx",
+    "db:generate": "bun run --filter @sce/db db:generate",
+    "db:push": "bun run --filter @sce/db db:push",
+    "db:studio": "bun run --filter @sce/db db:studio",
+    "db:reset": "bun run --filter @sce/db db:reset",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "concurrently": "^10.0.5",
+    "typescript": "^5.9.3"
+  }
+}
