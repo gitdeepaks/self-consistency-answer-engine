@@ -59,12 +59,12 @@ bun run ask "Explain CRDTs and when they beat operational transforms"
 
 You need **either** individual provider keys **or** one Vercel AI Gateway key:
 
-| Variable | Enables |
-|---|---|
-| `OPENAI_API_KEY` | the OpenAI panel member |
-| `ANTHROPIC_API_KEY` | the Claude panel member **and the evaluator** |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | the Gemini panel member |
-| `AI_GATEWAY_API_KEY` | all three, via [Vercel AI Gateway](https://vercel.com/ai-gateway) |
+| Variable                       | Enables                                                           |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `OPENAI_API_KEY`               | the OpenAI panel member                                           |
+| `ANTHROPIC_API_KEY`            | the Claude panel member **and the evaluator**                     |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | the Gemini panel member                                           |
+| `AI_GATEWAY_API_KEY`           | all three, via [Vercel AI Gateway](https://vercel.com/ai-gateway) |
 
 Direct keys win when both are present. A provider with no credentials is marked `SKIPPED` and the
 run continues without it — you only need one to get started, though the technique needs at least two
@@ -79,12 +79,12 @@ Every model id is overridable — see `.env.example`.
 
 A Bun workspace with four packages:
 
-| Package | Role |
-|---|---|
+| Package           | Role                                                                                                                    |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `packages/shared` | Zod schemas, domain types, the model registry, run-event union. The single source of truth shared by server and client. |
-| `packages/db` | Prisma schema + a typed repository. SQLite locally, Turso in production, via the libSQL driver adapter. |
-| `packages/server` | Hono app: RPC routes, SSE progress stream, provider resolution, the orchestrator. |
-| `packages/cli` | OpenTUI + React terminal client, talking to the server over the typed Hono RPC client. |
+| `packages/db`     | Prisma schema + a typed repository. SQLite locally, Turso in production, via the libSQL driver adapter.                 |
+| `packages/server` | Hono app: RPC routes, SSE progress stream, provider resolution, the orchestrator.                                       |
+| `packages/cli`    | OpenTUI + React terminal client, talking to the server over the typed Hono RPC client.                                  |
 
 ---
 
@@ -110,16 +110,16 @@ replay the complete timeline without dropping or duplicating an event.
 
 ### Failure handling
 
-| Situation | Behaviour |
-|---|---|
-| One model errors or times out | That candidate is marked `ERROR` with the reason; the run continues. |
-| A model returns empty text | Treated as a failure, not a valid candidate. |
-| No credentials for a provider | Candidate marked `SKIPPED` with a hint naming the env var to set. |
-| Every model fails | Run marked `FAILED`, listing each provider's reason. |
-| Evaluator fails | Run marked `FAILED` — candidate answers are kept and still viewable. |
-| Evaluator hits the token cap | Explicit "raise `MAX_OUTPUT_TOKENS`" message instead of an opaque parser error. |
-| Server unreachable from the CLI | Status bar names the URL and the command to start it. |
-| SSE stream drops mid-run | The CLI falls back to a one-shot `GET /api/runs/:id`. |
+| Situation                       | Behaviour                                                                       |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| One model errors or times out   | That candidate is marked `ERROR` with the reason; the run continues.            |
+| A model returns empty text      | Treated as a failure, not a valid candidate.                                    |
+| No credentials for a provider   | Candidate marked `SKIPPED` with a hint naming the env var to set.               |
+| Every model fails               | Run marked `FAILED`, listing each provider's reason.                            |
+| Evaluator fails                 | Run marked `FAILED` — candidate answers are kept and still viewable.            |
+| Evaluator hits the token cap    | Explicit "raise `MAX_OUTPUT_TOKENS`" message instead of an opaque parser error. |
+| Server unreachable from the CLI | Status bar names the URL and the command to start it.                           |
+| SSE stream drops mid-run        | The CLI falls back to a one-shot `GET /api/runs/:id`.                           |
 
 ---
 
@@ -128,15 +128,15 @@ replay the complete timeline without dropping or duplicating an event.
 Base URL `http://localhost:8787`. The CLI consumes these through `hc<AppType>()`, so route paths,
 inputs and response shapes are type-checked end to end.
 
-| Route | Purpose |
-|---|---|
-| `GET /api/health` | Liveness probe. |
-| `GET /api/providers` | Which panel members are usable and how they are reached (`direct` / `gateway`). |
-| `POST /api/runs` | `{ prompt, providers?, temperature? }` → the seeded run. |
-| `GET /api/runs` | `?limit&cursor` → run history, newest first. |
-| `GET /api/runs/:id` | Full run: candidates + synthesis. |
-| `GET /api/runs/:id/events` | SSE progress stream. |
-| `DELETE /api/runs/:id` | Delete a run and its children. |
+| Route                      | Purpose                                                                         |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `GET /api/health`          | Liveness probe.                                                                 |
+| `GET /api/providers`       | Which panel members are usable and how they are reached (`direct` / `gateway`). |
+| `POST /api/runs`           | `{ prompt, providers?, temperature? }` → the seeded run.                        |
+| `GET /api/runs`            | `?limit&cursor` → run history, newest first.                                    |
+| `GET /api/runs/:id`        | Full run: candidates + synthesis.                                               |
+| `GET /api/runs/:id/events` | SSE progress stream.                                                            |
+| `DELETE /api/runs/:id`     | Delete a run and its children.                                                  |
 
 ```bash
 curl -s localhost:8787/api/providers | jq
@@ -170,30 +170,30 @@ curl -N localhost:8787/api/runs/<id>/events
 where they conflicted, and a scorecard with per-model strengths and weaknesses. The remaining tabs
 show each model's raw answer, so you can check the synthesis against its sources.
 
-| Key | Action | Key | Action |
-|---|---|---|---|
-| `enter` | ask | `esc` | browse answers |
-| `←` `→` | switch tabs | `↑` `↓` | scroll |
-| `i` | back to the prompt | `^h` | history |
-| `^n` | new run | `^r` | retry last prompt |
-| `^c` | quit | | |
+| Key     | Action             | Key     | Action            |
+| ------- | ------------------ | ------- | ----------------- |
+| `enter` | ask                | `esc`   | browse answers    |
+| `←` `→` | switch tabs        | `↑` `↓` | scroll            |
+| `i`     | back to the prompt | `^h`    | history           |
+| `^n`    | new run            | `^r`    | retry last prompt |
+| `^c`    | quit               |         |                   |
 
 ---
 
 ## Scripts
 
-| Command | Effect |
-|---|---|
-| `bun run dev` | API + TUI concurrently, hot reload on both |
-| `bun run dev:logs` | Tail the API log while `dev` is running |
-| `bun run dev:server` | API only, with hot reload |
-| `bun run dev:cli` | TUI only, with hot reload |
-| `bun run ask "<question>"` | TUI, pre-loaded with a question |
-| `bun run db:push` | Apply the Prisma schema |
-| `bun run db:studio` | Browse the database |
-| `bun run db:reset` | Drop and recreate |
-| `bun test` | Full suite |
-| `bun run typecheck` | `tsc --noEmit` across every package |
+| Command                    | Effect                                     |
+| -------------------------- | ------------------------------------------ |
+| `bun run dev`              | API + TUI concurrently, hot reload on both |
+| `bun run dev:logs`         | Tail the API log while `dev` is running    |
+| `bun run dev:server`       | API only, with hot reload                  |
+| `bun run dev:cli`          | TUI only, with hot reload                  |
+| `bun run ask "<question>"` | TUI, pre-loaded with a question            |
+| `bun run db:push`          | Apply the Prisma schema                    |
+| `bun run db:studio`        | Browse the database                        |
+| `bun run db:reset`         | Drop and recreate                          |
+| `bun test`                 | Full suite                                 |
+| `bun run typecheck`        | `tsc --noEmit` across every package        |
 
 ### Tests
 
@@ -268,16 +268,16 @@ bun build packages/cli/src/index.tsx --compile --outfile sce
 
 ## Configuration
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `PORT` / `HOST` | `8787` / `0.0.0.0` | Server bind |
-| `CORS_ORIGIN` | `*` | Allowed origin for `/api/*` |
-| `PER_MODEL_TIMEOUT_MS` | `120000` | Budget per panel member |
-| `EVALUATOR_TIMEOUT_MS` | `180000` | Budget for synthesis |
-| `MAX_OUTPUT_TOKENS` | `4000` | Per candidate; the evaluator gets double |
-| `MAX_RETRIES` | `2` | SDK-level retries per call |
-| `EVENT_BUFFER_TTL_MS` | `600000` | How long a finished run stays replayable |
-| `SCE_SERVER_URL` | `http://localhost:8787` | Where the CLI looks for the API |
+| Variable               | Default                 | Meaning                                  |
+| ---------------------- | ----------------------- | ---------------------------------------- |
+| `PORT` / `HOST`        | `8787` / `0.0.0.0`      | Server bind                              |
+| `CORS_ORIGIN`          | `*`                     | Allowed origin for `/api/*`              |
+| `PER_MODEL_TIMEOUT_MS` | `120000`                | Budget per panel member                  |
+| `EVALUATOR_TIMEOUT_MS` | `180000`                | Budget for synthesis                     |
+| `MAX_OUTPUT_TOKENS`    | `4000`                  | Per candidate; the evaluator gets double |
+| `MAX_RETRIES`          | `2`                     | SDK-level retries per call               |
+| `EVENT_BUFFER_TTL_MS`  | `600000`                | How long a finished run stays replayable |
+| `SCE_SERVER_URL`       | `http://localhost:8787` | Where the CLI looks for the API          |
 
 ---
 
