@@ -3,9 +3,16 @@
 // A `Run` is one user prompt fanned out across the model panel. Each panel
 // member produces a `Candidate`. A single `Synthesis` row holds the evaluator's
 // comparison of those candidates plus the final merged answer.
+//
+// Everything a tenant owns hangs off `Tenant`, and every tenant-scoped table
+// carries `tenantId` as the leading column of its hot index — isolation is a
+// property of the schema, not of remembering to add a filter.
+//
+// The connection URL is supplied by `prisma.config.ts` so the Prisma CLI, the
+// server and the tests all resolve it the same way from any working directory.
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 generator client {
@@ -13,22 +20,128 @@ generator client {
   output   = "../generated"
 }
 
+/* ----------------------------------------------------------------- enums */
+
+/// Lifecycle of a whole run.
+enum RunStatus {
+  PENDING
+  FANNING_OUT
+  SYNTHESIZING
+  COMPLETE
+  FAILED
+}
+
+/// Lifecycle of a single panel member's answer.
+enum CandidateStatus {
+  PENDING
+  RUNNING
+  OK
+  ERROR
+  SKIPPED
+}
+
+/// Panel members. Lowercase so the generated union matches `ProviderId` in
+/// @sce/shared exactly, with no mapping layer and no cast.
+enum ProviderId {
+  openai
+  anthropic
+  google
+}
+
+enum MemberRole {
+  owner
+  admin
+  member
+  viewer
+}
+
+/// Which leg of a run a metered model call belongs to.
+enum UsageKind {
+  CANDIDATE
+  EVALUATOR
+}
+
+/* --------------------------------------------------------------- tenancy */
+
+model Tenant {
+  id        String    @id @default(cuid())
+  /// URL-safe handle, unique across the install.
+  slug      String    @unique
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  memberships Membership[]
+  runs        Run[]
+  usage       UsageRecord[]
+
+  @@index([createdAt])
+}
+
+model User {
+  id          String  @id @default(cuid())
+  email       String  @unique
+  displayName String?
+  /// Identity-provider subject (Clerk user id), populated in Phase 3.
+  externalId  String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  createdRuns Run[]        @relation("RunCreatedBy")
+}
+
+model Membership {
+  id       String     @id @default(cuid())
+  tenantId String
+  userId   String
+  role     MemberRole @default(member)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+}
+
+/* ------------------------------------------------------------------ runs */
+
 model Run {
-  id             String    @id @default(cuid())
+  id              String  @id @default(cuid())
+  tenantId        String
+  /// Null until Phase 3 attaches a real principal to each request.
+  createdByUserId String?
+
   prompt         String
-  /// PENDING | FANNING_OUT | SYNTHESIZING | COMPLETE | FAILED
-  status         String    @default("PENDING")
+  status         RunStatus @default(PENDING)
   error          String?
   temperature    Float?
   totalLatencyMs Int?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  completedAt    DateTime?
 
+  /// Monotonic allocator for `RunEvent.seq`. Incremented inside the same
+  /// transaction that writes the event, so sequence numbers are gap-free even
+  /// with several workers appending to one run.
+  eventSeq Int @default(0)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User?         @relation("RunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   candidates Candidate[]
   synthesis  Synthesis?
+  events     RunEvent[]
+  usage      UsageRecord[]
 
-  @@index([createdAt])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@index([createdByUserId])
 }
 
 model Candidate {
@@ -36,14 +149,24 @@ model Candidate {
   runId String
   run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  /// openai | anthropic | google
-  provider String
+  provider ProviderId
   label    String
   model    String
-  /// PENDING | RUNNING | OK | ERROR | SKIPPED
-  status   String @default("PENDING")
+  status   CandidateStatus @default(PENDING)
 
-  content      String?
+  /// Panel order. Several candidates are inserted in one statement and share a
+  /// `createdAt` to the millisecond, so timestamps cannot order them — and an
+  /// answer panel that shuffles between reads is a real bug, not a cosmetic one.
+  position Int @default(0)
+
+  /// Inline answer body. Null when the body exceeded the inline threshold and
+  /// was offloaded — see `contentRef`.
+  content    String?
+  /// Object-store key for an offloaded answer body.
+  contentRef String?
+  /// Size of the answer body in bytes, inline or offloaded.
+  contentBytes Int?
+
   error        String?
   latencyMs    Int?
   inputTokens  Int?
@@ -53,6 +176,7 @@ model Candidate {
   updatedAt DateTime @updatedAt
 
   @@unique([runId, provider])
+  @@unique([runId, position])
   @@index([runId])
 }
 
@@ -61,19 +185,109 @@ model Synthesis {
   runId String @unique
   run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  model       String
-  finalAnswer String
-  /// JSON-encoded string[] — claims every model converged on.
-  agreements  String  @default("[]")
-  /// JSON-encoded string[] — points of conflict and their resolution.
-  disagreements String @default("[]")
-  /// JSON-encoded CandidateReview[] — per-candidate scoring.
-  reviews     String  @default("[]")
-  confidence  Float   @default(0)
+  model String
+
+  /// Inline final answer, or null when offloaded to `finalAnswerRef`.
+  finalAnswer      String?
+  finalAnswerRef   String?
+  finalAnswerBytes Int?
+
+  /// string[] — claims every model converged on.
+  agreements    Json @default("[]")
+  /// string[] — points of conflict and their resolution.
+  disagreements Json @default("[]")
+  /// CandidateReview[] — per-candidate scoring.
+  reviews       Json @default("[]")
+  confidence    Float @default(0)
 
   latencyMs    Int?
   inputTokens  Int?
   outputTokens Int?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/* ---------------------------------------------------- durable event log */
+
+/// Append-only progress log for a run.
+///
+/// The in-process buffer this replaces died with the process that owned it, so
+/// only the replica that started a run could serve its stream. Persisting the
+/// same append-only-plus-cursor shape means any replica can replay any run, and
+/// a restart mid-run loses nothing.
+model RunEvent {
+  id    String @id @default(cuid())
+  runId String
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// 1-based position in this run's stream.
+  seq       Int
+  /// `RunEvent["type"]` from @sce/shared. Free-text because the union's dotted
+  /// names ("run.snapshot") are not valid Postgres enum labels.
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@unique([runId, seq])
+}
+
+/* ------------------------------------------------------- usage and cost */
+
+/// One metered model call. Retained after its run is deleted so that billing
+/// and cost dashboards stay correct — hence the nullable `runId`.
+model UsageRecord {
+  id       String  @id @default(cuid())
+  tenantId String
+  runId    String?
+
+  candidateId String?
+  kind        UsageKind
+  provider    ProviderId
+  model       String
+
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+
+  /// Cost in micro-cents (1e-8 USD). BigInt because a monthly rollup overflows
+  /// a 32-bit integer long before it overflows a plausible invoice.
+  costMicroCents BigInt @default(0)
+  /// The `ModelPrice` row this cost was derived from. Null means the model had
+  /// no known price — the signal an unpriced model has appeared in production.
+  priceId        String?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run    Run?        @relation(fields: [runId], references: [id], onDelete: SetNull)
+  price  ModelPrice? @relation(fields: [priceId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([runId])
+  @@index([model, createdAt])
+}
+
+/// Versioned price list. Prices are added, never edited, so a historical
+/// `UsageRecord` can always be re-derived from the price that was in force.
+model ModelPrice {
+  id       String     @id @default(cuid())
+  provider ProviderId
+  model    String
+
+  /// Micro-cents per 1,000,000 input tokens.
+  inputPerMillion  BigInt
+  /// Micro-cents per 1,000,000 output tokens.
+  outputPerMillion BigInt
+
+  effectiveFrom DateTime
+  /// False for a placeholder that has not been checked against the vendor's
+  /// published price list. Placeholders must not be used to bill anyone.
+  verified      Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  usage UsageRecord[]
+
+  @@unique([provider, model, effectiveFrom])
+  @@index([model, effectiveFrom])
 }

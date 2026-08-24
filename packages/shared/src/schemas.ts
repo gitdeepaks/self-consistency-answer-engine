@@ -131,3 +131,68 @@ export const providerHealthSchema = z.object({
   hint: z.string().nullable(),
 })
 export type ProviderHealth = z.infer<typeof providerHealthSchema>
+
+/** ------------------------------------------------------------- tenancy */
+
+export const memberRoleSchema = z.enum(["owner", "admin", "member", "viewer"])
+export type MemberRole = z.infer<typeof memberRoleSchema>
+
+export const tenantSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+})
+export type Tenant = z.infer<typeof tenantSchema>
+
+export const userSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  displayName: z.string().nullable(),
+  createdAt: z.string(),
+})
+export type User = z.infer<typeof userSchema>
+
+export const membershipSchema = z.object({
+  id: z.string(),
+  tenantId: z.string(),
+  userId: z.string(),
+  role: memberRoleSchema,
+  createdAt: z.string(),
+})
+export type Membership = z.infer<typeof membershipSchema>
+
+/** --------------------------------------------------------------- usage */
+
+/** Which leg of a run a metered call belongs to. */
+export const usageKindSchema = z.enum(["CANDIDATE", "EVALUATOR"])
+export type UsageKind = z.infer<typeof usageKindSchema>
+
+export const usageRecordSchema = z.object({
+  id: z.string(),
+  runId: z.string().nullable(),
+  kind: usageKindSchema,
+  provider: providerIdSchema,
+  model: z.string(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  /** Cost in micro-cents (1e-8 USD). Zero when the model has no known price. */
+  costMicroCents: z.number(),
+  /** Null when no price was found — the "unpriced model" signal. */
+  priceId: z.string().nullable(),
+  createdAt: z.string(),
+})
+export type UsageRecord = z.infer<typeof usageRecordSchema>
+
+export const usageTotalsSchema = z.object({
+  runs: z.number(),
+  calls: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  costMicroCents: z.number(),
+  /** True when at least one call had no price at all — cost is understated. */
+  hasUnpricedCalls: z.boolean(),
+  /** True when at least one call was priced from an unverified placeholder. */
+  hasUnverifiedPricing: z.boolean(),
+})
+export type UsageTotals = z.infer<typeof usageTotalsSchema>

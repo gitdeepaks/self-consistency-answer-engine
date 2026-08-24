@@ -9,14 +9,15 @@
   },
   "scripts": {
     "db:generate": "bunx --bun prisma generate",
-    "db:push": "bunx --bun prisma db push",
+    "db:migrate": "bunx --bun prisma migrate dev",
+    "db:deploy": "bunx --bun prisma migrate deploy",
+    "db:status": "bunx --bun prisma migrate status",
     "db:studio": "bunx --bun prisma studio",
-    "typecheck": "bunx tsc --noEmit",
-    "db:reset": "bunx --bun prisma db push --force-reset"
+    "db:seed": "bun run src/seed.ts",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.4",
-    "@prisma/adapter-libsql": "^7.9.1",
+    "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "@sce/shared": "workspace:*",
     "zod": "^4.4.3"

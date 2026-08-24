@@ -13,14 +13,17 @@ RUN bun install --frozen-lockfile
 # ---------------------------------------------------------------------------
 FROM oven/bun:1.4-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Prisma Client is generated code, not a published artifact — build it here.
+# Deliberately before NODE_ENV=production: codegen needs no database, and the
+# datasource resolver requires a real DATABASE_URL once it believes it is in
+# production. Migrations run as the release command, where one is set.
 RUN cd packages/db && bunx --bun prisma generate
 
+ENV NODE_ENV=production
 EXPOSE 8787
 ENV PORT=8787 HOST=0.0.0.0
 

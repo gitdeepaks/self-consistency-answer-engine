@@ -87,7 +87,11 @@ mock.module("./providers.ts", () => ({
 
 const { startRun } = await import("./orchestrator.ts")
 const { runEvents } = await import("./event-bus.ts")
-const { getRun, deleteRun } = await import("@sce/db")
+const { getRun, deleteRun, ensureTenant } = await import("@sce/db")
+
+// A tenant of its own, so these tests neither see nor disturb the runs the
+// HTTP suite creates under the default tenant.
+const tenantId = (await ensureTenant("test-orchestrator", "Orchestrator tests")).id
 
 /** Drain the event bus until the run reaches a terminal event. */
 async function waitForRun(runId: string, timeoutMs = 5_000) {
@@ -108,7 +112,7 @@ async function waitForRun(runId: string, timeoutMs = 5_000) {
       if (event.type === "run.completed" || event.type === "run.failed") finish()
     }
   })
-  const run = await getRun(runId)
+  const run = await getRun(tenantId, runId)
   if (!run) throw new Error("run vanished")
   return { run, events }
 }
@@ -135,7 +139,7 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = GOOD_SYNTHESIS
 
-    const seeded = await startRun({ prompt: "Why is the sky blue?" })
+    const seeded = await startRun(tenantId, { prompt: "Why is the sky blue?" })
     const { run, events } = await waitForRun(seeded.id)
 
     expect(run.status).toBe("COMPLETE")
@@ -161,7 +165,7 @@ describe("orchestrator", () => {
     expect(events).toContain("synthesis.settled")
     expect(events.at(-1)).toBe("run.completed")
 
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 
   test("survives a partial panel failure and still synthesises", async () => {
@@ -171,7 +175,7 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = { ...GOOD_SYNTHESIS, reviews: [GOOD_SYNTHESIS.reviews[0]] }
 
-    const seeded = await startRun({ prompt: "Explain quicksort" })
+    const seeded = await startRun(tenantId, { prompt: "Explain quicksort" })
     const { run } = await waitForRun(seeded.id)
 
     expect(run.status).toBe("COMPLETE")
@@ -184,7 +188,7 @@ describe("orchestrator", () => {
     expect(byProvider.google?.error).toContain("empty")
 
     expect(run.synthesis).not.toBeNull()
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 
   test("fails the run when every model fails", async () => {
@@ -192,7 +196,7 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = GOOD_SYNTHESIS
 
-    const seeded = await startRun({ prompt: "Anything at all" })
+    const seeded = await startRun(tenantId, { prompt: "Anything at all" })
     const { run, events } = await waitForRun(seeded.id)
 
     expect(run.status).toBe("FAILED")
@@ -200,7 +204,7 @@ describe("orchestrator", () => {
     expect(run.synthesis).toBeNull()
     expect(events.at(-1)).toBe("run.failed")
 
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 
   test("fails cleanly when the evaluator errors, keeping candidates intact", async () => {
@@ -208,7 +212,7 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = null
 
-    const seeded = await startRun({ prompt: "Evaluator down" })
+    const seeded = await startRun(tenantId, { prompt: "Evaluator down" })
     const { run } = await waitForRun(seeded.id)
 
     expect(run.status).toBe("FAILED")
@@ -216,7 +220,7 @@ describe("orchestrator", () => {
     // Candidate work is not thrown away just because synthesis failed.
     expect(run.candidates.filter((c) => c.status === "OK")).toHaveLength(3)
 
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 
   test("honours a provider subset", async () => {
@@ -224,14 +228,14 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = { ...GOOD_SYNTHESIS, reviews: [GOOD_SYNTHESIS.reviews[1]] }
 
-    const seeded = await startRun({ prompt: "Only Claude please", providers: ["anthropic"] })
+    const seeded = await startRun(tenantId, { prompt: "Only Claude please", providers: ["anthropic"] })
     const { run } = await waitForRun(seeded.id)
 
     expect(run.candidates).toHaveLength(1)
     expect(run.candidates[0]?.provider).toBe("anthropic")
     expect(run.status).toBe("COMPLETE")
 
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 
   test("backfills a review for any candidate the evaluator ignored", async () => {
@@ -239,7 +243,7 @@ describe("orchestrator", () => {
     evaluatorAvailable = true
     evaluatorPayload = { ...GOOD_SYNTHESIS, reviews: [GOOD_SYNTHESIS.reviews[0]] }
 
-    const seeded = await startRun({ prompt: "Partial reviews" })
+    const seeded = await startRun(tenantId, { prompt: "Partial reviews" })
     const { run } = await waitForRun(seeded.id)
 
     expect(run.synthesis?.reviews).toHaveLength(3)
@@ -250,6 +254,6 @@ describe("orchestrator", () => {
     ])
     expect(run.synthesis?.reviews[2]?.weaknesses[0]).toContain("did not return a review")
 
-    await deleteRun(run.id)
+    await deleteRun(tenantId, run.id)
   })
 })

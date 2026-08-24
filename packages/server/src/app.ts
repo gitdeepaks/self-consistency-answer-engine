@@ -1,12 +1,12 @@
 import { zValidator } from "@hono/zod-validator"
-import { deleteRun, getRun, listRuns } from "@sce/db"
+import { defaultTenant, deleteRun, getRun, listRuns, usageTotals } from "@sce/db"
 import {
   askInputSchema,
   isTerminalEvent,
   listQueriesInputSchema,
   type RunEvent,
 } from "@sce/shared"
-import { Hono } from "hono"
+import { Hono, type MiddlewareHandler } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { streamSSE } from "hono/streaming"
@@ -19,7 +19,34 @@ import { resolveEvaluator, resolvePanel, toHealth } from "./providers.ts"
 /** Interval between SSE keep-alive frames, in ms. */
 const HEARTBEAT_MS = 15_000
 
-const api = new Hono()
+/**
+ * Request-scoped values. `tenantId` is resolved by middleware and is the only
+ * thing route handlers are allowed to pass to the repository as an owner — no
+ * handler reads it from anywhere else, so Phase 3 changes how it is derived and
+ * nothing downstream moves.
+ */
+type Env = { Variables: { tenantId: string } }
+
+/**
+ * Attach the owning tenant to the request.
+ *
+ * Until Phase 3 authenticates callers there is exactly one tenant, but every
+ * data path below is already written as if there were many — which is what
+ * makes adding real identity a change of one middleware rather than a change of
+ * every query.
+ */
+const withTenant: MiddlewareHandler<Env> = async (c, next) => {
+  c.set("tenantId", (await defaultTenant()).id)
+  await next()
+}
+
+const api = new Hono<Env>()
+  // Registered before the routes they guard; `/health` and `/providers` stay
+  // out of scope deliberately so a liveness probe never touches the database.
+  .use("/runs", withTenant)
+  .use("/runs/*", withTenant)
+  .use("/usage", withTenant)
+
   .get("/health", (c) =>
     c.json({
       ok: true,
@@ -39,26 +66,29 @@ const api = new Hono()
 
   /** Start a run. Returns the seeded run immediately; progress arrives on SSE. */
   .post("/runs", zValidator("json", askInputSchema), async (c) => {
-    const run = await startRun(c.req.valid("json"))
+    const run = await startRun(c.get("tenantId"), c.req.valid("json"))
     return c.json({ run }, 201)
   })
 
   .get("/runs", zValidator("query", listQueriesInputSchema), async (c) => {
     const { limit, cursor } = c.req.valid("query")
-    return c.json(await listRuns({ limit, cursor }))
+    return c.json(await listRuns({ tenantId: c.get("tenantId"), limit, cursor }))
   })
 
   .get("/runs/:id", async (c) => {
-    const run = await getRun(c.req.param("id"))
+    const run = await getRun(c.get("tenantId"), c.req.param("id"))
     if (!run) return c.json({ error: "Run not found" }, 404)
     return c.json({ run })
   })
 
   .delete("/runs/:id", async (c) => {
-    const deleted = await deleteRun(c.req.param("id"))
+    const deleted = await deleteRun(c.get("tenantId"), c.req.param("id"))
     if (!deleted) return c.json({ error: "Run not found" }, 404)
     return c.json({ ok: true })
   })
+
+  /** Metered spend for the calling tenant. Quota enforcement lands in Phase 4. */
+  .get("/usage", async (c) => c.json({ usage: await usageTotals({ tenantId: c.get("tenantId") }) }))
 
   /**
    * Live progress for a run.
@@ -70,7 +100,7 @@ const api = new Hono()
    */
   .get("/runs/:id/events", async (c) => {
     const runId = c.req.param("id")
-    const run = await getRun(runId)
+    const run = await getRun(c.get("tenantId"), runId)
     if (!run) return c.json({ error: "Run not found" }, 404)
 
     return streamSSE(c, async (stream) => {
@@ -150,6 +180,7 @@ app.get("/", (c) =>
       "GET  /api/runs/:id": "full run with candidates + synthesis",
       "GET  /api/runs/:id/events": "SSE progress stream",
       "DEL  /api/runs/:id": "delete a run",
+      "GET  /api/usage": "token and cost totals for the calling tenant",
     },
   }),
 )

@@ -8,5 +8,6 @@ dist/
 !.env.example
 packages/db/generated/
 packages/db/prisma/*.db*
+packages/db/.blobs/
 .DS_Store
 *.tsbuildinfo

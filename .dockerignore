@@ -2,6 +2,7 @@ node_modules
 **/node_modules
 packages/db/generated
 packages/db/prisma/*.db*
+packages/db/.blobs
 dist
 .git
 .env

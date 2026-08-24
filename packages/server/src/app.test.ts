@@ -67,12 +67,16 @@ mock.module("./providers.ts", () => ({
 }))
 
 const { app } = await import("./app.ts")
-const { deleteRun } = await import("@sce/db")
+const { defaultTenant, deleteRun } = await import("@sce/db")
+
+// The HTTP surface resolves the default tenant per request, so cleanup has to
+// scope itself the same way.
+const tenantId = (await defaultTenant()).id
 
 const created: string[] = []
 
 afterAll(async () => {
-  for (const id of created) await deleteRun(id).catch(() => {})
+  for (const id of created) await deleteRun(tenantId, id).catch(() => {})
 })
 
 async function startRun(prompt: string, extra: Record<string, unknown> = {}) {

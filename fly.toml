@@ -5,6 +5,11 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile"
 
+# Migrations run once, before the new machines take traffic, and a failure here
+# aborts the deploy rather than starting a server against the wrong schema.
+[deploy]
+  release_command = "bun run --filter @sce/db db:deploy"
+
 [env]
   PORT = "8787"
   HOST = "0.0.0.0"

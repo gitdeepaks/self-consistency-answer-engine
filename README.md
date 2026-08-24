@@ -25,7 +25,7 @@ of every candidate, with wrong claims dropped.
                     │ compare→merge│
                     └──────┬───────┘
                     ┌──────┴───────┐
-                    │ Prisma/SQLite│              every run is persisted
+                    │Prisma/Postgres│             every run is persisted
                     └──────────────┘
 ```
 
@@ -36,7 +36,9 @@ of every candidate, with wrong claims dropped.
 ```bash
 bun install                     # install the workspace
 cp .env.example .env            # add at least one provider key
-bun run db:push                 # create the SQLite database
+bun run db:up                   # start Postgres + Redis (Docker)
+bun run db:migrate              # create the schema
+bun run db:seed                 # optional: a demo tenant and a few runs
 
 bun run dev                     # API + TUI together, one terminal
 ```
@@ -82,7 +84,7 @@ A Bun workspace with four packages:
 | Package           | Role                                                                                                                    |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `packages/shared` | Zod schemas, domain types, the model registry, run-event union. The single source of truth shared by server and client. |
-| `packages/db`     | Prisma schema + a typed repository. SQLite locally, Turso in production, via the libSQL driver adapter.                 |
+| `packages/db`     | Prisma schema, migrations and a tenant-scoped repository. Postgres everywhere, via the Prisma `pg` driver adapter.       |
 | `packages/server` | Hono app: RPC routes, SSE progress stream, provider resolution, the orchestrator.                                       |
 | `packages/cli`    | OpenTUI + React terminal client, talking to the server over the typed Hono RPC client.                                  |
 
@@ -189,16 +191,21 @@ show each model's raw answer, so you can check the synthesis against its sources
 | `bun run dev:server`       | API only, with hot reload                  |
 | `bun run dev:cli`          | TUI only, with hot reload                  |
 | `bun run ask "<question>"` | TUI, pre-loaded with a question            |
-| `bun run db:push`          | Apply the Prisma schema                    |
+| `bun run db:up` / `db:down`| Start / stop local Postgres + Redis         |
+| `bun run db:nuke`          | Stop them and delete the volumes           |
+| `bun run db:migrate`       | Create and apply a migration (local)       |
+| `bun run db:deploy`        | Apply pending migrations (any environment) |
+| `bun run db:status`        | Which migrations are applied               |
+| `bun run db:seed`          | Demo tenant, demo runs, model price list   |
 | `bun run db:studio`        | Browse the database                        |
-| `bun run db:reset`         | Drop and recreate                          |
 | `bun test`                 | Full suite                                 |
 | `bun run typecheck`        | `tsc --noEmit` across every package        |
 
 ### Tests
 
-27 tests, no API keys and no network required — every model call runs against
-`MockLanguageModelV4`.
+53 tests, no API keys and no network required — every model call runs against
+`MockLanguageModelV4`. The database tests need the local Postgres up
+(`bun run db:up`); everything else runs with nothing started.
 
 - `packages/server/src/orchestrator.test.ts` — fan-out, partial failure, total failure, evaluator
   failure, provider subsets, review backfill.
@@ -207,6 +214,12 @@ show each model's raw answer, so you can check the synthesis against its sources
 - `packages/cli/src/App.test.tsx` — headless render of the real TUI: idle screen, a run streaming to
   completion, tab switching.
 - `packages/cli/src/components/Header.test.tsx` — which header items survive as the terminal narrows.
+- `packages/db/src/repository.test.ts` — enum enforcement, JSON round-trips, large-body offload,
+  the durable event log, pricing and usage totals — against real Postgres.
+- `packages/db/src/isolation.test.ts` — for every repository function, tenant B cannot read, list,
+  stream, mutate or delete tenant A's run.
+- `packages/db/src/repository.scoping.test.ts` — static check that no new query can skip its
+  `tenantId` filter.
 - `packages/shared/src/env-file.test.ts` — root `.env` discovery and parsing.
 
 ---
@@ -217,19 +230,26 @@ The server is a plain Bun HTTP app; the CLI points at it via `SCE_SERVER_URL`.
 
 ### 1. Database
 
-Local development uses SQLite at `packages/db/prisma/dev.db`. For a deployed server use
-[Turso](https://turso.tech) — same libSQL driver adapter, no code change:
+Postgres, everywhere. Locally, `bun run db:up` starts the Postgres and Redis in
+`infra/docker-compose.yml`; `DATABASE_URL` then defaults to that instance, and is **required** when
+`NODE_ENV=production`.
 
 ```bash
-turso db create sce && turso db show sce --url && turso db tokens create sce
+bun run db:up        # start Postgres + Redis
+bun run db:migrate   # apply migrations (creates one when the schema changed)
+bun run db:seed      # a demo tenant, a few runs, and the model price list
 ```
 
-```
-DATABASE_URL=libsql://sce-<org>.turso.io
-TURSO_AUTH_TOKEN=<token>
-```
+Schema changes ship as migrations, never as `db push`: `prisma migrate dev` locally,
+`prisma migrate deploy` on the way to any other environment. `fly.toml` runs the latter as its
+release command, so a failed migration aborts the deploy instead of starting a server against the
+wrong schema.
 
-Apply the schema once with those variables set: `bun run db:push`.
+Answer bodies over `LARGE_BODY_THRESHOLD_BYTES` (32 KiB by default) are written to object storage
+under a `tenants/<id>/` prefix and the row keeps a pointer; the repository hydrates them on read, so
+nothing above it knows the difference.
+
+Backups and the tested restore procedure are in [`doc/runbooks/restore.md`](doc/runbooks/restore.md).
 
 ### 2. Server
 
@@ -241,8 +261,8 @@ Fly.io (`fly.toml` is included):
 
 ```bash
 fly launch --no-deploy
-fly secrets set ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GOOGLE_GENERATIVE_AI_API_KEY=… \
-               DATABASE_URL=… TURSO_AUTH_TOKEN=…
+fly postgres create --name sce-db && fly postgres attach sce-db   # sets DATABASE_URL
+fly secrets set ANTHROPIC_API_KEY=… OPENAI_API_KEY=… GOOGLE_GENERATIVE_AI_API_KEY=…
 fly deploy
 ```
 

@@ -1,0 +1,46 @@
+# Local development services.
+#
+#   bun run db:up      start Postgres + Redis
+#   bun run db:down    stop them (data survives)
+#   bun run db:nuke    stop them and delete the volumes
+#
+# Redis is not used until Phase 2 (queue + durable progress bus); it is here now
+# so that `bun run dev` never needs a second setup step later.
+
+name: sce
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sce
+      POSTGRES_PASSWORD: sce
+      POSTGRES_DB: sce
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sce -d sce"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:
+  redis-data:
