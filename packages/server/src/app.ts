@@ -1,10 +1,27 @@
 import { zValidator } from "@hono/zod-validator"
-import { defaultTenant, deleteRun, getRun, listRuns, usageTotals } from "@sce/db"
 import {
+  defaultTenant,
+  deleteRun,
+  getRun,
+  latestEventSeq,
+  listRuns,
+  usageTotals,
+} from "@sce/db"
+import { queueConfig, runBus } from "@sce/queue"
+import {
+  assertNever,
   askInputSchema,
+  cancelRunInputSchema,
+  eventCursorSchema,
+  eventStreamQuerySchema,
   isTerminalEvent,
   listQueriesInputSchema,
+  resolveEvaluatorAvailability,
+  resolvePanelAvailability,
+  runHeadersSchema,
+  toHealth,
   type RunEvent,
+  type RunStatus,
 } from "@sce/shared"
 import { Hono, type MiddlewareHandler } from "hono"
 import { cors } from "hono/cors"
@@ -12,12 +29,7 @@ import { logger } from "hono/logger"
 import { streamSSE } from "hono/streaming"
 import { config } from "./env.ts"
 import { describeError } from "./errors.ts"
-import { runEvents } from "./event-bus.ts"
-import { startRun } from "./orchestrator.ts"
-import { resolveEvaluator, resolvePanel, toHealth } from "./providers.ts"
-
-/** Interval between SSE keep-alive frames, in ms. */
-const HEARTBEAT_MS = 15_000
+import { cancelRun, startRun } from "./runs.ts"
 
 /**
  * Request-scoped values. `tenantId` is resolved by middleware and is the only
@@ -51,24 +63,49 @@ const api = new Hono<Env>()
     c.json({
       ok: true,
       service: "self-consistency-answer-engine",
+      role: "api",
+      transport: queueConfig.RUN_TRANSPORT,
       time: new Date().toISOString(),
     }),
   )
 
-  /** Which panel members are usable right now, and how they are reached. */
+  /**
+   * Which panel members are usable right now, and how they are reached.
+   *
+   * Answered from configuration alone — the API no longer constructs provider
+   * clients, because it no longer calls them.
+   */
   .get("/providers", (c) => {
-    const evaluator = resolveEvaluator()
+    const evaluator = resolveEvaluatorAvailability()
     return c.json({
-      panel: resolvePanel().map(toHealth),
+      panel: resolvePanelAvailability().map(toHealth),
       evaluator: { ...toHealth(evaluator), role: "evaluator" as const },
     })
   })
 
-  /** Start a run. Returns the seeded run immediately; progress arrives on SSE. */
-  .post("/runs", zValidator("json", askInputSchema), async (c) => {
-    const run = await startRun(c.get("tenantId"), c.req.valid("json"))
-    return c.json({ run }, 201)
-  })
+  /**
+   * Start a run.
+   *
+   * Validate, persist, enqueue, return. Nothing here waits on a model, so this
+   * handler's latency is a database write and a Redis round trip regardless of
+   * how long the answer takes to produce.
+   *
+   * An `Idempotency-Key` header makes a retry safe: the same key returns the
+   * same run with `200` instead of fanning out a second, identically expensive
+   * panel.
+   */
+  .post(
+    "/runs",
+    zValidator("json", askInputSchema),
+    zValidator("header", runHeadersSchema),
+    async (c) => {
+      const headers = c.req.valid("header")
+      const { run, created } = await startRun(c.get("tenantId"), c.req.valid("json"), {
+        idempotencyKey: headers["idempotency-key"] ?? null,
+      })
+      return c.json({ run }, created ? 201 : 200)
+    },
+  )
 
   .get("/runs", zValidator("query", listQueriesInputSchema), async (c) => {
     const { limit, cursor } = c.req.valid("query")
@@ -79,6 +116,26 @@ const api = new Hono<Env>()
     const run = await getRun(c.get("tenantId"), c.req.param("id"))
     if (!run) return c.json({ error: "Run not found" }, 404)
     return c.json({ run })
+  })
+
+  /**
+   * Stop a run.
+   *
+   * A user closing a tab should stop paying for tokens. The row is flipped
+   * first and the fast-path signal published second, so the guarantee does not
+   * depend on the signal arriving.
+   */
+  .post("/runs/:id/cancel", zValidator("json", cancelRunInputSchema), async (c) => {
+    const outcome = await cancelRun(
+      c.get("tenantId"),
+      c.req.param("id"),
+      c.req.valid("json").reason ?? "Canceled by request",
+    )
+
+    if (outcome.outcome === "not-found") return c.json({ error: "Run not found" }, 404)
+    // Already finished is not an error — a client that cancels a run which
+    // completed a moment earlier got what it wanted, just not because of this.
+    return c.json({ run: outcome.run, canceled: outcome.outcome === "canceled" })
   })
 
   .delete("/runs/:id", async (c) => {
@@ -93,69 +150,109 @@ const api = new Hono<Env>()
   /**
    * Live progress for a run.
    *
-   * The event buffer is append-only, so a cursor over it gives replay and live
-   * follow in one loop with no risk of dropping or duplicating an event — which
-   * means a client can connect at any point, or reconnect, and still see the
-   * whole timeline.
+   * The cursor design is unchanged from the in-memory version — replay from a
+   * position, then follow — but the storage behind it is not, and that is the
+   * whole of Phase 2's scale-out. Backfill comes from the durable `RunEvent`
+   * log in Postgres and the live tail from a Redis Stream, so **any** replica
+   * can serve **any** run's stream, including one that was started on a machine
+   * that has since been replaced.
+   *
+   * A reconnecting client resumes with `Last-Event-ID` (which `EventSource`
+   * sends by itself) or `?afterSeq=`. Both are parsed, because both are network
+   * input that ends up in a database predicate.
    */
-  .get("/runs/:id/events", async (c) => {
+  .get("/runs/:id/events", zValidator("query", eventStreamQuerySchema), async (c) => {
+    const tenantId = c.get("tenantId")
     const runId = c.req.param("id")
-    const run = await getRun(c.get("tenantId"), runId)
+
+    const run = await getRun(tenantId, runId)
     if (!run) return c.json({ error: "Run not found" }, 404)
 
+    // `EventSource` resends `Last-Event-ID` by itself; everything else passes
+    // `?afterSeq=`. The header wins, because a browser that has one is telling
+    // us where it actually got to.
+    const header = c.req.header("last-event-id")
+    const afterSeq =
+      header === undefined ? (c.req.valid("query").afterSeq ?? 0) : eventCursorSchema.parse(header)
+
     return streamSSE(c, async (stream) => {
-      let seq = 0
-      const send = (event: RunEvent | { type: "ping" }) =>
-        stream.writeSSE({ data: JSON.stringify(event), event: event.type, id: String(seq++) })
-
-      let wake: (() => void) | null = null
-      const unsubscribe = runEvents.subscribe(runId, () => {
-        wake?.()
-      })
-
-      let aborted = false
+      const controller = new AbortController()
       stream.onAbort(() => {
-        aborted = true
-        wake?.()
+        controller.abort()
       })
+
+      /**
+       * The SSE id is the durable sequence number, which is what makes
+       * `Last-Event-ID` a resume cursor rather than a counter. Ephemeral events
+       * have no position in the log, so they are sent without an id — a client
+       * that reconnects after one simply does not ask for it back.
+       */
+      const send = async (event: RunEvent, seq: number | null): Promise<void> => {
+        await stream.writeSSE({
+          data: JSON.stringify(event),
+          event: event.type,
+          ...(seq === null ? {} : { id: String(seq) }),
+        })
+      }
 
       try {
-        // Nothing buffered: the run predates this process (or its buffer aged
-        // out). Replay a synthetic timeline from the database instead.
-        if (runEvents.history(runId).length === 0) {
-          await send({ type: "run.snapshot", run })
-          if (run.status === "FAILED") {
-            await send({ type: "run.failed", runId, error: run.error ?? "Run failed" })
-          } else {
-            await send({ type: "run.completed", runId, totalLatencyMs: run.totalLatencyMs ?? 0 })
-          }
+        // A run that finished before the durable log existed (or whose events
+        // were pruned) has nothing to replay. Synthesise a timeline from the
+        // row so a client still sees a beginning and an end.
+        const closing = terminalEventFor(run.status, runId, run.error, run.totalLatencyMs)
+        if (closing && (await latestEventSeq(tenantId, runId)) <= afterSeq) {
+          await send({ type: "run.snapshot", run }, null)
+          await send(closing, null)
           return
         }
 
-        let cursor = 0
-        while (!aborted) {
-          const buffer = runEvents.history(runId)
-          for (; cursor < buffer.length; cursor++) {
-            const event = buffer[cursor]!
-            await send(event)
-            if (isTerminalEvent(event)) return
+        for await (const message of runBus().subscribe(tenantId, runId, {
+          afterSeq,
+          signal: controller.signal,
+        })) {
+          if (message.kind === "heartbeat") {
+            await stream.writeSSE({ data: JSON.stringify({ type: "ping" }), event: "ping" })
+            continue
           }
-
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, HEARTBEAT_MS)
-            wake = () => {
-              clearTimeout(timer)
-              wake = null
-              resolve()
-            }
-          })
-          if (!aborted && runEvents.history(runId).length === cursor) await send({ type: "ping" })
+          await send(message.frame.event, message.frame.seq)
+          if (isTerminalEvent(message.frame.event)) return
         }
       } finally {
-        unsubscribe()
+        controller.abort()
       }
     })
   })
+
+/**
+ * The closing event for a run that concluded before anyone subscribed, or null
+ * when the run is still in flight.
+ *
+ * Written as an exhaustive switch over `RunStatus` rather than a check against
+ * a list, so adding a status is a compile error here — the one place where
+ * getting it wrong means a client waits for ever for an event that never comes.
+ */
+function terminalEventFor(
+  status: RunStatus,
+  runId: string,
+  error: string | null,
+  totalLatencyMs: number | null,
+): RunEvent | null {
+  switch (status) {
+    case "FAILED":
+      return { type: "run.failed", runId, error: error ?? "Run failed" }
+    case "CANCELED":
+      return { type: "run.canceled", runId, reason: error ?? "Run was canceled" }
+    case "COMPLETE":
+      return { type: "run.completed", runId, totalLatencyMs: totalLatencyMs ?? 0 }
+    case "PENDING":
+    case "QUEUED":
+    case "FANNING_OUT":
+    case "SYNTHESIZING":
+      return null
+    default:
+      return assertNever(status, "terminalEventFor")
+  }
+}
 
 const app = new Hono()
 
@@ -175,10 +272,11 @@ app.get("/", (c) =>
     docs: {
       "GET  /api/health": "liveness probe",
       "GET  /api/providers": "panel + evaluator availability",
-      "POST /api/runs": "{ prompt, providers?, temperature? } -> seeded run",
+      "POST /api/runs": "{ prompt, providers?, temperature? } -> queued run (Idempotency-Key)",
       "GET  /api/runs": "?limit&cursor -> run history",
       "GET  /api/runs/:id": "full run with candidates + synthesis",
-      "GET  /api/runs/:id/events": "SSE progress stream",
+      "POST /api/runs/:id/cancel": "{ reason? } -> stop a run in flight",
+      "GET  /api/runs/:id/events": "SSE progress stream (Last-Event-ID or ?afterSeq)",
       "DEL  /api/runs/:id": "delete a run",
       "GET  /api/usage": "token and cost totals for the calling tenant",
     },

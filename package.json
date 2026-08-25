@@ -7,13 +7,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "mkdir -p node_modules/.cache && concurrently --raw --kill-others --names api,cli \"bun run dev:server < /dev/null > node_modules/.cache/sce-server.log 2>&1\" \"bun run dev:cli\"",
+    "dev": "mkdir -p node_modules/.cache && concurrently --raw --kill-others --names api,worker,cli \"bun run dev:server < /dev/null > node_modules/.cache/sce-server.log 2>&1\" \"bun run dev:worker < /dev/null > node_modules/.cache/sce-worker.log 2>&1\" \"bun run dev:cli\"",
     "dev:server": "bun --watch run packages/server/src/index.ts",
+    "dev:worker": "bun --watch run packages/worker/src/index.ts",
     "dev:cli": "bun --watch run packages/cli/src/index.tsx",
-    "dev:logs": "tail -f node_modules/.cache/sce-server.log",
+    "dev:logs": "tail -f node_modules/.cache/sce-server.log node_modules/.cache/sce-worker.log",
     "start": "bun run packages/server/src/index.ts",
+    "start:worker": "bun run packages/worker/src/index.ts",
     "cli": "bun run packages/cli/src/index.tsx",
     "ask": "bun run packages/cli/src/index.tsx",
+    "dlq": "bun run packages/worker/src/cli.ts",
     "db:up": "docker compose -f infra/docker-compose.yml up -d --wait",
     "db:down": "docker compose -f infra/docker-compose.yml down",
     "db:nuke": "docker compose -f infra/docker-compose.yml down -v",
@@ -25,11 +28,14 @@
     "db:studio": "bun run --filter @sce/db db:studio",
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",
-    "test": "bun test"
+    "test": "bun test",
+    "scale-test": "bun run infra/scale-test.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "bullmq": "^6.2.1",
     "concurrently": "^10.0.5",
+    "ioredis": "^6.0.0",
     "typescript": "^5.9.3"
   }
 }

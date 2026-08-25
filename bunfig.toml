@@ -3,3 +3,4 @@ linker = "hoisted"
 
 [test]
 root = "."
+preload = ["./test-setup.ts"]
