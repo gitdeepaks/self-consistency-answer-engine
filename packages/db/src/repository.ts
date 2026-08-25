@@ -1,5 +1,6 @@
 import {
   candidateReviewSchema,
+  isTerminalRunStatus,
   runEventSchema,
   toJson,
   type Candidate,
@@ -121,6 +122,7 @@ export async function toCandidate(row: CandidateRow): Promise<Candidate> {
     latencyMs: row.latencyMs,
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
+    attempts: row.attempts,
   }
 }
 
@@ -148,8 +150,11 @@ export async function toRun(
     status: row.status,
     error: row.error,
     totalLatencyMs: row.totalLatencyMs,
+    temperature: row.temperature,
     createdAt: row.createdAt.toISOString(),
     completedAt: row.completedAt?.toISOString() ?? null,
+    deadlineAt: row.deadlineAt?.toISOString() ?? null,
+    canceledAt: row.canceledAt?.toISOString() ?? null,
     candidates: await Promise.all(row.candidates.map(toCandidate)),
     synthesis: row.synthesis ? await toSynthesis(row.synthesis) : null,
   }
@@ -180,13 +185,22 @@ export interface CandidateSeed {
   error?: string | null
 }
 
-export async function createRun(input: {
+export interface CreateRunInput {
   tenantId: string
   createdByUserId?: string | null
   prompt: string
   temperature?: number
   candidates: CandidateSeed[]
-}): Promise<Run> {
+  /** Caller-supplied `Idempotency-Key`, if any. */
+  idempotencyKey?: string | null
+  /** Wall-clock deadline for the whole run. */
+  deadlineAt?: Date | null
+  /** Per-run ceilings the worker enforces before each model call. */
+  maxTotalTokens?: number | null
+  maxCostMicroCents?: number | null
+}
+
+export async function createRun(input: CreateRunInput): Promise<Run> {
   const row = await prisma.run.create({
     data: {
       tenantId: input.tenantId,
@@ -194,6 +208,13 @@ export async function createRun(input: {
       prompt: input.prompt,
       temperature: input.temperature ?? null,
       status: "PENDING",
+      idempotencyKey: input.idempotencyKey ?? null,
+      deadlineAt: input.deadlineAt ?? null,
+      maxTotalTokens: input.maxTotalTokens ?? null,
+      maxCostMicroCents:
+        input.maxCostMicroCents === undefined || input.maxCostMicroCents === null
+          ? null
+          : BigInt(input.maxCostMicroCents),
       candidates: {
         create: input.candidates.map((c, position) => ({
           position,
@@ -210,6 +231,69 @@ export async function createRun(input: {
   return toRun(row)
 }
 
+/**
+ * Find the run a previous request with this idempotency key created.
+ *
+ * The unique index is what actually prevents a duplicate; this lookup is the
+ * fast path that avoids provoking a constraint violation on the overwhelmingly
+ * common retry. `createRunIdempotent` handles the race the lookup cannot.
+ */
+export async function findRunByIdempotencyKey(
+  tenantId: string,
+  idempotencyKey: string,
+): Promise<Run | null> {
+  const row = await prisma.run.findUnique({
+    where: { tenantId_idempotencyKey: { tenantId, idempotencyKey } },
+    include: runInclude,
+  })
+  return row ? toRun(row) : null
+}
+
+/** A run creation attempt: either this call made it, or an earlier one did. */
+export interface IdempotentRun {
+  run: Run
+  /** False when the run already existed under the same idempotency key. */
+  created: boolean
+}
+
+/**
+ * Create a run, or return the one an earlier identical request created.
+ *
+ * Two concurrent retries of the same request race here, and the loser gets a
+ * unique-constraint violation rather than a duplicate row — because the
+ * guarantee lives in the database index, not in the check above it. Catching
+ * P2002 and re-reading is what turns that violation into the correct answer.
+ */
+export async function createRunIdempotent(input: CreateRunInput): Promise<IdempotentRun> {
+  const key = input.idempotencyKey ?? null
+  if (key === null) return { run: await createRun(input), created: true }
+
+  const existing = await findRunByIdempotencyKey(input.tenantId, key)
+  if (existing) return { run: existing, created: false }
+
+  try {
+    return { run: await createRun(input), created: true }
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+    const raced = await findRunByIdempotencyKey(input.tenantId, key)
+    if (!raced) throw error
+    return { run: raced, created: false }
+  }
+}
+
+/**
+ * Prisma's known-request errors arrive typed as `unknown` in a catch block.
+ * Parsed with a schema rather than asserted — the one shape check that decides
+ * whether a duplicate run is created is not a good place for a claim the
+ * compiler cannot verify.
+ */
+const prismaErrorCodeSchema = z.object({ code: z.string() })
+
+function isUniqueViolation(error: unknown): boolean {
+  const parsed = prismaErrorCodeSchema.safeParse(error)
+  return parsed.success && parsed.data.code === "P2002"
+}
+
 export async function setRunStatus(
   tenantId: string,
   runId: string,
@@ -218,6 +302,13 @@ export async function setRunStatus(
   await prisma.run.update({ where: { id: runId, tenantId }, data: { status } })
 }
 
+/**
+ * Mark a candidate as in flight, counting the attempt.
+ *
+ * The increment happens here rather than in the worker's retry handler so the
+ * count is durable: a job evicted from Redis still leaves behind the record of
+ * how many times the panel member was tried.
+ */
 export async function setCandidateRunning(
   tenantId: string,
   runId: string,
@@ -225,24 +316,34 @@ export async function setCandidateRunning(
 ): Promise<Candidate> {
   const row = await prisma.candidate.update({
     where: { id: candidateId, run: { id: runId, tenantId } },
-    data: { status: "RUNNING" },
+    data: { status: "RUNNING", attempts: { increment: 1 }, error: null },
   })
   return toCandidate(row)
 }
+
+/** How a candidate finished. Exactly one of these reaches the row. */
+export type CandidateResult =
+  | {
+      status: "OK"
+      content: string
+      latencyMs: number
+      inputTokens: number | null
+      outputTokens: number | null
+    }
+  /**
+   * `ERROR` is a call that was made and failed; `SKIPPED` is a call that was
+   * never made (breaker open, budget exhausted, provider unconfigured);
+   * `CANCELED` is a call the caller stopped paying for. Collapsing the three
+   * into one status is how "we spent money and it failed" becomes
+   * indistinguishable from "we correctly declined to spend money".
+   */
+  | { status: "ERROR" | "SKIPPED" | "CANCELED"; error: string; latencyMs?: number | null }
 
 export async function settleCandidate(
   tenantId: string,
   runId: string,
   candidateId: string,
-  result:
-    | {
-        status: "OK"
-        content: string
-        latencyMs: number
-        inputTokens: number | null
-        outputTokens: number | null
-      }
-    | { status: "ERROR"; error: string; latencyMs: number },
+  result: CandidateResult,
 ): Promise<Candidate> {
   const data: Prisma.CandidateUpdateInput =
     result.status === "OK"
@@ -259,11 +360,44 @@ export async function settleCandidate(
             outputTokens: result.outputTokens,
           }
         })()
-      : { status: "ERROR" as const, error: result.error, latencyMs: result.latencyMs }
+      : {
+          status: result.status,
+          error: result.error,
+          latencyMs: result.latencyMs ?? null,
+        }
 
   const row = await prisma.candidate.update({
     where: { id: candidateId, run: { id: runId, tenantId } },
     data,
+  })
+  return toCandidate(row)
+}
+
+/**
+ * Store a partial answer produced before a timeout or cancellation cut the call
+ * short.
+ *
+ * Streaming makes this possible for the first time: a call that used to yield
+ * nothing on timeout now yields whatever arrived, recorded next to the reason
+ * it stopped. The status stays a failure — the text is evidence, not an answer.
+ */
+export async function settleCandidatePartial(
+  tenantId: string,
+  runId: string,
+  candidateId: string,
+  result: { status: "ERROR" | "CANCELED"; error: string; latencyMs: number; partial: string },
+): Promise<Candidate> {
+  const body = await storeBody(tenantId, runId, `candidate-${candidateId}.partial.md`, result.partial)
+  const row = await prisma.candidate.update({
+    where: { id: candidateId, run: { id: runId, tenantId } },
+    data: {
+      status: result.status,
+      content: body.inline,
+      contentRef: body.ref,
+      contentBytes: body.bytes,
+      error: result.error,
+      latencyMs: result.latencyMs,
+    },
   })
   return toCandidate(row)
 }
@@ -329,6 +463,154 @@ export async function failRun(tenantId: string, runId: string, error: string): P
   })
 }
 
+/* --------------------------------------------------- queueing and cancelling */
+
+/**
+ * Record that the queue accepted this run's jobs.
+ *
+ * Written after the enqueue succeeds, so a run stuck at `PENDING` means the
+ * enqueue itself failed — a different incident from a run at `QUEUED` that no
+ * worker ever claimed, and one worth being able to tell apart at 3am.
+ */
+export async function markRunQueued(tenantId: string, runId: string): Promise<void> {
+  await prisma.run.updateMany({
+    where: { id: runId, tenantId, status: "PENDING" },
+    data: { status: "QUEUED" },
+  })
+}
+
+export interface RunControl {
+  status: RunStatus
+  canceledAt: Date | null
+  cancelReason: string | null
+  deadlineAt: Date | null
+  maxTotalTokens: number | null
+  maxCostMicroCents: number | null
+}
+
+/**
+ * The small slice of a run the worker checks between steps.
+ *
+ * Deliberately a narrow projection rather than a full `getRun`: this is read
+ * before every model call, and hydrating candidate bodies (possibly from object
+ * storage) to answer "was this canceled?" would make the check cost more than
+ * the thing it is protecting.
+ */
+export async function getRunControl(tenantId: string, runId: string): Promise<RunControl | null> {
+  const row = await prisma.run.findUnique({
+    where: { id: runId, tenantId },
+    select: {
+      status: true,
+      canceledAt: true,
+      cancelReason: true,
+      deadlineAt: true,
+      maxTotalTokens: true,
+      maxCostMicroCents: true,
+    },
+  })
+  if (!row) return null
+  return {
+    status: row.status,
+    canceledAt: row.canceledAt,
+    cancelReason: row.cancelReason,
+    deadlineAt: row.deadlineAt,
+    maxTotalTokens: row.maxTotalTokens,
+    maxCostMicroCents: row.maxCostMicroCents === null ? null : Number(row.maxCostMicroCents),
+  }
+}
+
+/** Outcome of a cancellation request, so the API can answer honestly. */
+export type CancelOutcome =
+  | { outcome: "canceled"; run: Run }
+  | { outcome: "already-terminal"; run: Run }
+  | { outcome: "not-found" }
+
+/**
+ * Cancel a run that has not already finished.
+ *
+ * The status filter is inside the `updateMany` predicate rather than in a
+ * read-then-write above it, so a run that completes in the same instant is
+ * never rewritten from `COMPLETE` back to `CANCELED` — the database arbitrates,
+ * not a race between two application reads.
+ */
+export async function cancelRun(
+  tenantId: string,
+  runId: string,
+  reason: string,
+): Promise<CancelOutcome> {
+  const now = new Date()
+  const { count } = await prisma.run.updateMany({
+    where: {
+      id: runId,
+      tenantId,
+      status: { in: ["PENDING", "QUEUED", "FANNING_OUT", "SYNTHESIZING"] },
+    },
+    data: { status: "CANCELED", canceledAt: now, cancelReason: reason, completedAt: now },
+  })
+
+  const run = await getRun(tenantId, runId)
+  if (!run) return { outcome: "not-found" }
+  return count > 0 ? { outcome: "canceled", run } : { outcome: "already-terminal", run }
+}
+
+/**
+ * Mark every candidate that never got to run as `CANCELED`.
+ *
+ * Called once the run itself is canceled, so the panel does not sit at
+ * `PENDING` forever after its jobs are discarded.
+ */
+export async function cancelPendingCandidates(
+  tenantId: string,
+  runId: string,
+  reason: string,
+): Promise<number> {
+  const { count } = await prisma.candidate.updateMany({
+    where: { runId, run: { tenantId }, status: { in: ["PENDING", "RUNNING"] } },
+    data: { status: "CANCELED", error: reason },
+  })
+  return count
+}
+
+/**
+ * Runs that blew through their deadline without any worker finishing them.
+ *
+ * The reaper that consumes this is the backstop for the case no in-process
+ * timeout can cover: the worker holding the run died between checkpoints, so
+ * there is nobody left to notice the deadline passed.
+ */
+/**
+ * Who a maintenance query runs on behalf of.
+ *
+ * The reaper is the one legitimate system-wide reader in the codebase, and
+ * saying so is a discriminated union rather than an optional `tenantId?`
+ * precisely because an omitted optional field looks identical to a forgotten
+ * one in a diff. `{ kind: "every-tenant" }` has to be typed out.
+ */
+export type RunScope =
+  | { kind: "tenant"; tenantId: string }
+  | { kind: "every-tenant"; reason: "deadline reaper runs across the whole install" }
+
+function scopeFilter(scope: RunScope): { tenantId?: string } {
+  return scope.kind === "tenant" ? { tenantId: scope.tenantId } : {}
+}
+
+export async function listOverdueRuns(options: {
+  scope: RunScope
+  now?: Date
+  limit?: number
+}): Promise<{ id: string; tenantId: string; deadlineAt: Date | null }[]> {
+  return prisma.run.findMany({
+    where: {
+      ...scopeFilter(options.scope),
+      status: { in: ["PENDING", "QUEUED", "FANNING_OUT", "SYNTHESIZING"] },
+      deadlineAt: { lt: options.now ?? new Date() },
+    },
+    select: { id: true, tenantId: true, deadlineAt: true },
+    orderBy: { deadlineAt: "asc" },
+    take: options.limit ?? 100,
+  })
+}
+
 export async function deleteRun(tenantId: string, runId: string): Promise<boolean> {
   // Offloaded bodies live outside the database, so the cascade cannot reach
   // them; collect the pointers before the rows go.
@@ -381,8 +663,11 @@ export async function listRuns(options: {
       status: row.status,
       error: row.error,
       totalLatencyMs: row.totalLatencyMs,
+      temperature: row.temperature,
       createdAt: row.createdAt.toISOString(),
       completedAt: row.completedAt?.toISOString() ?? null,
+      deadlineAt: row.deadlineAt?.toISOString() ?? null,
+      canceledAt: row.canceledAt?.toISOString() ?? null,
       candidateCount: row._count.candidates,
       hasSynthesis: row.synthesis !== null,
     })),
@@ -558,6 +843,42 @@ export async function recordUsage(input: {
     },
   })
   return toUsageRecord(row)
+}
+
+/** Tokens and money already spent on one run. */
+export interface RunUsage {
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  costMicroCents: number
+}
+
+/**
+ * What a run has spent so far.
+ *
+ * Read by the worker before every model call so a per-run ceiling is enforced
+ * *before* the spend, not reported after it. Summing the persisted
+ * `UsageRecord` rows rather than tracking a counter in worker memory is what
+ * makes the ceiling hold across retries, restarts and several workers sharing
+ * one run's fan-out.
+ */
+export async function runUsage(tenantId: string, runId: string): Promise<RunUsage> {
+  const aggregate = await prisma.usageRecord.aggregate({
+    where: { tenantId, runId },
+    _count: { _all: true },
+    _sum: { inputTokens: true, outputTokens: true, costMicroCents: true },
+  })
+
+  const inputTokens = aggregate._sum.inputTokens ?? 0
+  const outputTokens = aggregate._sum.outputTokens ?? 0
+  return {
+    calls: aggregate._count._all,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    costMicroCents: Number(aggregate._sum.costMicroCents ?? 0n),
+  }
 }
 
 export async function listUsage(options: {

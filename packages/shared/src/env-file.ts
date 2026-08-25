@@ -12,8 +12,12 @@ function parse(contents: string): Record<string, string> {
     const match = LINE.exec(line)
     if (!match) continue
 
-    const key = match[1]!
-    let value = match[2]!.trim()
+    // `noUncheckedIndexedAccess` makes these honest: a capture group is
+    // `string | undefined` no matter how sure the regex looks.
+    const key = match[1]
+    const captured = match[2]
+    if (key === undefined || captured === undefined) continue
+    let value = captured.trim()
 
     if (
       (value.startsWith('"') && value.endsWith('"') && value.length > 1) ||

@@ -71,9 +71,41 @@ function findCalls(source: string): Call[] {
   return calls
 }
 
-/** Does this call's arguments constrain the query to one tenant? */
+/**
+ * Does this call's arguments constrain the query to one tenant?
+ *
+ * `scopeFilter(...)` counts because it takes a `RunScope`, a discriminated
+ * union whose cross-tenant variant cannot be reached without typing
+ * `{ kind: "every-tenant", reason: … }` at the call site. That is a visible
+ * decision in a diff, which is the property this test exists to protect — an
+ * optional `tenantId?` left undefined is not.
+ */
 function isScoped(args: string): boolean {
-  return /\btenantId\b/.test(args)
+  return /\btenantId\b/.test(args) || /\bscopeFilter\(/.test(args)
+}
+
+/**
+ * Does this parameter list carry an owner — directly, or through a named
+ * interface it refers to?
+ *
+ * Following the reference matters: `createRun(input: CreateRunInput)` is every
+ * bit as scoped as an inline object literal with a `tenantId` field, and a test
+ * that could not tell the difference would push the codebase towards inline
+ * types purely to satisfy the test.
+ */
+function mentionsTenant(params: string, depth = 0): boolean {
+  if (/\btenantId\b/.test(params)) return true
+  if (depth > 2) return false
+
+  for (const reference of params.matchAll(/:\s*([A-Z]\w*)/g)) {
+    const typeName = reference[1]
+    if (typeName === undefined) continue
+    const declaration = new RegExp(
+      `(?:interface|type)\\s+${typeName}\\b[^{]*\\{([\\s\\S]*?)\\n\\}`,
+    ).exec(SOURCE)
+    if (declaration?.[1] && mentionsTenant(declaration[1], depth + 1)) return true
+  }
+  return false
 }
 
 describe("repository query scoping", () => {
@@ -100,7 +132,9 @@ describe("repository query scoping", () => {
       const [, name = "", params = ""] = match
       // Pure row mappers take a row, not an owner; they cannot query anything.
       if (name.startsWith("to") || name === "findPrice" || name === "upsertModelPrice") continue
-      if (!/tenantId/.test(params)) missing.push(name)
+      // Takes a RunScope instead — see the run.findMany exemption above.
+      if (name === "listOverdueRuns") continue
+      if (!mentionsTenant(params)) missing.push(name)
     }
     expect(missing).toEqual([])
   })

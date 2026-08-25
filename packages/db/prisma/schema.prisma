@@ -23,12 +23,18 @@ generator client {
 /* ----------------------------------------------------------------- enums */
 
 /// Lifecycle of a whole run.
+///
+/// `PENDING` is the row the API writes; `QUEUED` is the acknowledgement that
+/// the queue accepted the job. Keeping them distinct makes "the API took the
+/// prompt but no worker ever picked it up" a state you can query for.
 enum RunStatus {
   PENDING
+  QUEUED
   FANNING_OUT
   SYNTHESIZING
   COMPLETE
   FAILED
+  CANCELED
 }
 
 /// Lifecycle of a single panel member's answer.
@@ -38,6 +44,7 @@ enum CandidateStatus {
   OK
   ERROR
   SKIPPED
+  CANCELED
 }
 
 /// Panel members. Lowercase so the generated union matches `ProviderId` in
@@ -123,6 +130,29 @@ model Run {
   temperature    Float?
   totalLatencyMs Int?
 
+  /// Caller-supplied `Idempotency-Key`. A retried `POST /api/runs` carrying the
+  /// same key returns this run instead of fanning out a second, identically
+  /// expensive panel. Unique per tenant so two tenants never collide.
+  idempotencyKey String?
+
+  /// Wall-clock deadline for the whole run, enforced by the worker between
+  /// steps and as an `AbortSignal` during every model call. Set at creation
+  /// from `RUN_DEADLINE_MS`.
+  deadlineAt DateTime?
+
+  /// Per-run ceilings, enforced in the worker before each model call. Stored on
+  /// the run rather than read from worker config so a plan (Phase 4) can raise
+  /// or lower them per tenant without a redeploy, and so a historical run still
+  /// records the ceiling it actually ran under.
+  maxTotalTokens    Int?
+  maxCostMicroCents BigInt?
+
+  /// Set when a caller cancels. The worker observes it between steps; the
+  /// cancellation is also published on Redis pub/sub so an in-flight model call
+  /// aborts immediately rather than at the next checkpoint.
+  canceledAt     DateTime?
+  cancelReason   String?
+
   /// Monotonic allocator for `RunEvent.seq`. Incremented inside the same
   /// transaction that writes the event, so sequence numbers are gap-free even
   /// with several workers appending to one run.
@@ -139,9 +169,12 @@ model Run {
   events     RunEvent[]
   usage      UsageRecord[]
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, createdAt])
   @@index([tenantId, status])
   @@index([createdByUserId])
+  /// Reaper query: find runs past their deadline that no worker finished.
+  @@index([status, deadlineAt])
 }
 
 model Candidate {
@@ -171,6 +204,11 @@ model Candidate {
   latencyMs    Int?
   inputTokens  Int?
   outputTokens Int?
+
+  /// Queue delivery attempts spent on this candidate. Recorded on the row (not
+  /// just in the queue) so the attempt count survives job eviction and shows up
+  /// in the run inspector next to the error it produced.
+  attempts Int @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

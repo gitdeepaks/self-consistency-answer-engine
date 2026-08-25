@@ -59,9 +59,12 @@ export const PROVIDER_LIST: ProviderSpec[] = PROVIDER_IDS.map((id) => PROVIDERS[
 
 /** The evaluator that synthesises the final answer. Claude by default. */
 export const EVALUATOR = {
-  provider: "anthropic" as ProviderId,
+  // `satisfies` checks the literal against ProviderId while keeping the narrow
+  // inferred type — which is what `as ProviderId` was reaching for and could
+  // not deliver, since an assertion only silences the compiler.
+  provider: "anthropic",
   modelEnv: "EVALUATOR_MODEL",
   defaultModel: "claude-opus-5",
-} as const
+} as const satisfies { provider: ProviderId; modelEnv: string; defaultModel: string }
 
 export const GATEWAY_API_KEY_ENV = "AI_GATEWAY_API_KEY"
