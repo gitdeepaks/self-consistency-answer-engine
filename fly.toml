@@ -1,4 +1,14 @@
 # fly launch --no-deploy  →  fly secrets set …  →  fly deploy
+#
+# Two process groups from one image, scaled independently:
+#
+#   fly scale count api=3 worker=3
+#
+# That independence is the deployment shape Phase 2 exists to enable. The API
+# scales on request rate and holds SSE connections; the worker scales on queue
+# depth and holds model calls. Before Phase 2 they were the same process, so a
+# burst of expensive runs and a burst of cheap reads competed for the same
+# machines — and a deploy killed every run in flight.
 app = "self-consistency-answer-engine"
 primary_region = "iad"
 
@@ -7,19 +17,28 @@ primary_region = "iad"
 
 # Migrations run once, before the new machines take traffic, and a failure here
 # aborts the deploy rather than starting a server against the wrong schema.
+# Every Phase 2 migration is additive, so the previous release keeps working
+# against the new schema and a rollback stays a real option.
 [deploy]
   release_command = "bun run --filter @sce/db db:deploy"
+  strategy = "rolling"
 
 [env]
   PORT = "8787"
   HOST = "0.0.0.0"
+  RUN_TRANSPORT = "redis"
+
+[processes]
+  api = "bun run packages/server/src/index.ts"
+  worker = "bun run packages/worker/src/index.ts"
 
 [http_service]
+  processes = ["api"]
   internal_port = 8787
   force_https = true
   auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   # The evaluator pass can run for minutes; do not reap idle-looking SSE streams.
   [http_service.concurrency]
@@ -34,6 +53,15 @@ primary_region = "iad"
     method = "GET"
     path = "/api/health"
 
+# A worker's drain waits for its in-flight jobs, so the platform must wait too.
+# Killing it sooner does not lose the work — the job is redelivered once its
+# lock expires — but it does make a client watch nothing happen until then.
 [[vm]]
+  processes = ["api"]
   size = "shared-cpu-1x"
   memory = "512mb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-2x"
+  memory = "1gb"
