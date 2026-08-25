@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test"
-import type { AskInput, Run, RunEvent } from "@sce/shared"
+import type { AskInput, Run } from "@sce/shared"
+import type { StreamedEvent } from "./api.ts"
 
 /**
  * Renders the real TUI against a stubbed backend, so the layout, the event
@@ -12,8 +13,11 @@ const COMPLETED_RUN: Run = {
   status: "COMPLETE",
   error: null,
   totalLatencyMs: 4200,
+  temperature: null,
   createdAt: new Date().toISOString(),
   completedAt: new Date().toISOString(),
+  deadlineAt: null,
+  canceledAt: null,
   candidates: [
     {
       id: "c1",
@@ -26,6 +30,7 @@ const COMPLETED_RUN: Run = {
       latencyMs: 1400,
       inputTokens: 20,
       outputTokens: 90,
+      attempts: 1,
     },
     {
       id: "c2",
@@ -38,6 +43,7 @@ const COMPLETED_RUN: Run = {
       latencyMs: 1800,
       inputTokens: 20,
       outputTokens: 110,
+      attempts: 1,
     },
     {
       id: "c3",
@@ -50,6 +56,7 @@ const COMPLETED_RUN: Run = {
       latencyMs: 300,
       inputTokens: null,
       outputTokens: null,
+      attempts: 3,
     },
   ],
   synthesis: {
@@ -68,6 +75,9 @@ const COMPLETED_RUN: Run = {
     outputTokens: 300,
   },
 }
+
+const CANDIDATES = COMPLETED_RUN.candidates
+const SYNTHESIS = COMPLETED_RUN.synthesis!
 
 const PROVIDERS = {
   panel: [
@@ -110,6 +120,29 @@ const PROVIDERS = {
   },
 }
 
+/**
+ * The stream the stub serves.
+ *
+ * Written as `{ event, seq }` frames because that is what the real client now
+ * yields: durable events carry the sequence number the TUI resumes from, and
+ * the ephemeral delta carries `null`. Exercising both here is what keeps the
+ * reducer's cursor handling honest.
+ */
+const STREAM: StreamedEvent[] = [
+  {
+    seq: 1,
+    event: { type: "run.snapshot", run: { ...COMPLETED_RUN, status: "PENDING", synthesis: null } },
+  },
+  { seq: 2, event: { type: "run.status", runId: "run_1", status: "FANNING_OUT" } },
+  { seq: 3, event: { type: "candidate.started", runId: "run_1", candidateId: "c1" } },
+  { seq: null, event: { type: "candidate.delta", runId: "run_1", candidateId: "c1", text: "Ray" } },
+  { seq: 4, event: { type: "candidate.settled", runId: "run_1", candidate: CANDIDATES[0]! } },
+  { seq: 5, event: { type: "candidate.settled", runId: "run_1", candidate: CANDIDATES[1]! } },
+  { seq: 6, event: { type: "candidate.settled", runId: "run_1", candidate: CANDIDATES[2]! } },
+  { seq: 7, event: { type: "synthesis.settled", runId: "run_1", synthesis: SYNTHESIS } },
+  { seq: 8, event: { type: "run.completed", runId: "run_1", totalLatencyMs: 4200 } },
+]
+
 mock.module("./api.ts", () => ({
   serverUrl: "http://localhost:8787",
   fetchProviders: async () => PROVIDERS,
@@ -117,14 +150,17 @@ mock.module("./api.ts", () => ({
   fetchRun: async () => COMPLETED_RUN,
   fetchHistory: async () => [],
   removeRun: async () => {},
-  streamRun: async function* (): AsyncGenerator<RunEvent> {
-    yield { type: "run.snapshot", run: { ...COMPLETED_RUN, status: "PENDING", synthesis: null } }
-    yield { type: "run.status", runId: "run_1", status: "FANNING_OUT" }
-    yield { type: "candidate.settled", runId: "run_1", candidate: COMPLETED_RUN.candidates[0]! }
-    yield { type: "candidate.settled", runId: "run_1", candidate: COMPLETED_RUN.candidates[1]! }
-    yield { type: "candidate.settled", runId: "run_1", candidate: COMPLETED_RUN.candidates[2]! }
-    yield { type: "synthesis.settled", runId: "run_1", synthesis: COMPLETED_RUN.synthesis! }
-    yield { type: "run.completed", runId: "run_1", totalLatencyMs: 4200 }
+  cancelRun: async () => COMPLETED_RUN,
+  streamRun: async function* (
+    _id: string,
+    _signal: AbortSignal,
+    afterSeq = 0,
+  ): AsyncGenerator<StreamedEvent> {
+    // Honour the cursor, so a resumed follow behaves the way the server does.
+    for (const frame of STREAM) {
+      if (frame.seq !== null && frame.seq <= afterSeq) continue
+      yield frame
+    }
   },
 }))
 

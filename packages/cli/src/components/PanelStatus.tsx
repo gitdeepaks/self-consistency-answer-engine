@@ -9,6 +9,7 @@ const MARKS: Record<Candidate["status"], string> = {
   OK: "✔",
   ERROR: "✖",
   SKIPPED: "–",
+  CANCELED: "⊘",
 }
 
 function statusColor(candidate: Candidate): string {
@@ -18,6 +19,7 @@ function statusColor(candidate: Candidate): string {
     case "ERROR":
       return theme.err
     case "SKIPPED":
+    case "CANCELED":
       return theme.dim
     default:
       return theme.warn

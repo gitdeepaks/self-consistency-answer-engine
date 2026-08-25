@@ -1,5 +1,5 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react"
-import type { ProviderHealth, RunSummary } from "@sce/shared"
+import { isTerminalEvent, type ProviderHealth, type RunSummary } from "@sce/shared"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import {
   createRun,
@@ -18,6 +18,13 @@ import { PromptBar } from "./components/PromptBar.tsx"
 import { StatusBar } from "./components/StatusBar.tsx"
 import { engineReducer, initialState } from "./state.ts"
 import { theme } from "./theme.ts"
+
+/**
+ * How many times a dropped SSE stream is reconnected before giving up and
+ * falling back to a single read. A replica being replaced should be invisible;
+ * a server that is genuinely gone should not be retried for ever.
+ */
+const MAX_STREAM_RETRIES = 4
 
 type Focus = "prompt" | "output"
 
@@ -86,27 +93,51 @@ export function App({ initialPrompt }: { initialPrompt?: string }) {
     }
   }, [])
 
+  /**
+   * Follow a run, resuming from the last sequence number on a dropped stream.
+   *
+   * The retry is not decoration: the API is several replicas behind a proxy, so
+   * a stream can end simply because the replica holding it was replaced. The
+   * cursor is what makes reconnecting invisible — the server replays exactly
+   * what was missed from the durable log, with no gap and no repeat.
+   */
   const follow = useCallback(async (runId: string) => {
     streamAbort.current?.abort()
     const controller = new AbortController()
     streamAbort.current = controller
 
-    try {
-      for await (const event of streamRun(runId, controller.signal)) {
-        dispatch({ type: "event", event })
-      }
-    } catch (error) {
-      if (controller.signal.aborted) return
-      // The stream died mid-run; fall back to a one-shot read so the user still
-      // sees whatever the server managed to persist.
+    let afterSeq = 0
+    let attempts = 0
+
+    while (!controller.signal.aborted) {
+      let terminal = false
       try {
-        dispatch({ type: "loaded", run: await fetchRun(runId) })
-      } catch {
-        dispatch({
-          type: "error",
-          message: error instanceof Error ? error.message : String(error),
-        })
+        for await (const { event, seq } of streamRun(runId, controller.signal, afterSeq)) {
+          if (seq !== null) afterSeq = seq
+          attempts = 0
+          dispatch({ type: "event", event })
+          if (isTerminalEvent(event)) terminal = true
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return
+        attempts += 1
+        if (attempts > MAX_STREAM_RETRIES) {
+          // Out of patience: fall back to a one-shot read so the user still
+          // sees whatever the server managed to persist.
+          try {
+            dispatch({ type: "loaded", run: await fetchRun(runId) })
+          } catch {
+            dispatch({
+              type: "error",
+              message: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
       }
+
+      if (terminal || controller.signal.aborted) return
+      await new Promise((resolve) => setTimeout(resolve, Math.min(300 * 2 ** attempts, 3000)))
     }
   }, [])
 
@@ -262,7 +293,12 @@ export function App({ initialPrompt }: { initialPrompt?: string }) {
       ) : (
         <>
           <TabBar tabs={tabs} activeIndex={tabs.indexOf(activeTab!)} />
-          <ContentView run={state.run} tab={activeTab} focused={focus === "output"} />
+          <ContentView
+            run={state.run}
+            tab={activeTab}
+            focused={focus === "output"}
+            streaming={state.streaming}
+          />
         </>
       )}
       <StatusBar focus={focus} message={notice} />

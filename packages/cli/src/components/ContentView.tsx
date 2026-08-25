@@ -130,9 +130,15 @@ interface ContentViewProps {
   run: Run | null
   tab: Tab | undefined
   focused: boolean
+  /**
+   * Text streamed so far for candidates that have not settled, keyed by
+   * candidate id. Kept separate from `run` because a partial answer is not an
+   * answer — the settled row remains the source of truth.
+   */
+  streaming: Record<string, string>
 }
 
-export function ContentView({ run, tab, focused }: ContentViewProps) {
+export function ContentView({ run, tab, focused, streaming }: ContentViewProps) {
   let body: React.ReactNode
 
   if (!run || !tab) {
@@ -156,6 +162,8 @@ export function ContentView({ run, tab, focused }: ContentViewProps) {
         lines={
           run.status === "FAILED"
             ? ["This run failed before a final answer was produced.", run.error ?? ""]
+            : run.status === "CANCELED"
+              ? ["This run was canceled before a final answer was produced.", run.error ?? ""]
             : ["Waiting for the panel to answer, then the evaluator will merge them…"]
         }
       />
@@ -164,8 +172,20 @@ export function ContentView({ run, tab, focused }: ContentViewProps) {
     body = <Analysis run={run} />
   } else {
     const candidate = run.candidates.find((c) => c.id === tab.key)
+    const partial = candidate ? (streaming[candidate.id] ?? "") : ""
+
     if (!candidate) {
       body = <Placeholder lines={["Unknown tab."]} />
+    } else if (candidate.status === "RUNNING" && partial.length > 0) {
+      // Tokens as they arrive. Rendered as plain text rather than Markdown:
+      // a half-written fence or table would flicker between parses, and the
+      // settled tab a moment later renders the finished document properly.
+      body = (
+        <box flexDirection="column">
+          <text fg={theme.dim}>{candidate.model} · generating…</text>
+          <text fg={theme.text}>{partial}</text>
+        </box>
+      )
     } else if (candidate.status === "OK" && candidate.content) {
       body = (
         <box flexDirection="column">
@@ -175,13 +195,24 @@ export function ContentView({ run, tab, focused }: ContentViewProps) {
           <markdown content={candidate.content} syntaxStyle={markdownStyle} />
         </box>
       )
-    } else if (candidate.status === "ERROR" || candidate.status === "SKIPPED") {
+    } else if (
+      candidate.status === "ERROR" ||
+      candidate.status === "SKIPPED" ||
+      candidate.status === "CANCELED"
+    ) {
       body = (
         <box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
           <text fg={theme.err}>
             {candidate.label} did not contribute to this run.
           </text>
           <text fg={theme.dim}>{candidate.error ?? "No reason recorded."}</text>
+          {/* Streaming means a cut-short call still leaves what it produced. */}
+          {candidate.content ? (
+            <>
+              <text fg={theme.dim}>Partial answer before it stopped:</text>
+              <text fg={theme.text}>{candidate.content}</text>
+            </>
+          ) : null}
         </box>
       )
     } else {
