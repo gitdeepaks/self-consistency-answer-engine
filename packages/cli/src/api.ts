@@ -14,6 +14,7 @@ import {
 } from "@sce/shared"
 import { hc } from "hono/client"
 import { z } from "zod"
+import { authHeaders } from "./auth/session.ts"
 
 loadRootEnv()
 
@@ -23,8 +24,18 @@ export const serverUrl = (
   "http://localhost:8787"
 ).replace(/\/$/, "")
 
-/** Fully typed RPC client — the route types come straight from the Hono app. */
-export const client = hc<AppType>(serverUrl)
+/**
+ * Fully typed RPC client — the route types come straight from the Hono app.
+ *
+ * `headers` is a function, not an object, because the credential is not static:
+ * an OAuth access token is refreshed shortly before it expires, and resolving
+ * it per request is what makes that invisible to every call site below. An
+ * absent credential yields no header at all, so the server answers 401 and the
+ * UI can say "run `sce auth login`" instead of failing locally.
+ */
+export const client = hc<AppType>(serverUrl, {
+  headers: () => authHeaders(serverUrl),
+})
 
 /**
  * Everything that crosses the wire is parsed.
