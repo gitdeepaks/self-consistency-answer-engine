@@ -52,9 +52,18 @@ cp .env.example .env            # add at least one provider key
 bun run db:up                   # start Postgres + Redis (Docker)
 bun run db:migrate              # create the schema
 bun run db:seed                 # optional: a demo tenant and a few runs
+bun run auth:bootstrap          # mint the first API key and store it for the CLI
 
 bun run dev                     # API + worker + TUI together, one terminal
 ```
+
+The API is closed to anonymous callers, so `auth:bootstrap` is what gets you in: it mints a real key
+for the default workspace and writes it to the CLI's credential store. It is deliberately not a
+dev-mode bypass in the auth middleware — a bypass would mean production runs different
+authentication code from development, and the branch nobody exercises is the one that ships enabled.
+
+For human sign-in through a browser instead, connect Clerk (`doc/runbooks/clerk-setup.md`) and run
+`sce auth login`.
 
 `dev` uses [concurrently](https://github.com/open-cli-tools/concurrently) in `--raw` mode, which is
 the only mode that hands a child real stdio — OpenTUI needs a genuine TTY for raw-mode input and the
@@ -165,12 +174,22 @@ checkpoint. Closing a tab stops costing tokens.
 Base URL `http://localhost:8787`. The CLI consumes these through `hc<AppType>()`, so route paths,
 inputs and response shapes are type-checked end to end.
 
-| Route                      | Purpose                                                                         |
-| -------------------------- | ------------------------------------------------------------------------------- |
+Everything that touches tenant data requires `Authorization: Bearer <credential>`. The public
+surface is four routes, and each is public for a reason you can state:
+
+| Public route          | Why it has to be                                                        |
+| --------------------- | ----------------------------------------------------------------------- |
+| `GET /api/health`     | A liveness probe must not touch the database or Clerk.                  |
+| `GET /api/providers`  | Answered from configuration; reveals no tenant's anything.              |
+| `GET /api/auth/config` | The OAuth discovery document `sce auth login` reads *before* it has a credential. |
+| `POST /api/webhooks/clerk` | The caller is Clerk, which holds no credential of ours — it is authenticated by Svix signature instead. |
+
 | Route                        | Purpose                                                                          |
 | ---------------------------- | -------------------------------------------------------------------------------- |
 | `GET /api/health`            | Liveness probe. Reports the active transport.                                    |
 | `GET /api/providers`         | Which panel members are usable and how they are reached (`direct` / `gateway`).  |
+| `GET /api/auth/config`       | OAuth issuer + public client id, so a CLI needs no configuration of its own.     |
+| `GET /api/auth/whoami`       | The principal behind the current credential: tenant, user, role, scopes.         |
 | `POST /api/runs`             | `{ prompt, providers?, temperature? }` → the queued run. `Idempotency-Key` honoured. |
 | `GET /api/runs`              | `?limit&cursor` → run history, newest first.                                     |
 | `GET /api/runs/:id`          | Full run: candidates + synthesis.                                                |
@@ -178,21 +197,64 @@ inputs and response shapes are type-checked end to end.
 | `GET /api/runs/:id/events`   | SSE progress stream. `Last-Event-ID` or `?afterSeq=` resumes from a cursor.       |
 | `DELETE /api/runs/:id`       | Delete a run and its children.                                                   |
 | `GET /api/usage`             | Token and cost totals for the calling tenant.                                    |
+| `GET /api/audit`             | The append-only audit trail. Owners and admins.                                  |
+| `GET /api/keys`              | List API keys. Secrets are never returned.                                       |
+| `POST /api/keys`             | `{ name, scopes?, expiresInDays? }` → a key, shown exactly once.                 |
+| `DELETE /api/keys/:id`       | Revoke a key, effective immediately.                                             |
+| `POST /api/webhooks/clerk`   | Clerk → Postgres identity sync. Svix-signed, idempotent, order-independent.      |
 
 ```bash
+export SCE_API_KEY=$(...)   # from `bun run auth:bootstrap`
+AUTH="authorization: Bearer $SCE_API_KEY"
+
 curl -s localhost:8787/api/providers | jq
 
 RUN=$(curl -s -X POST localhost:8787/api/runs \
+  -H "$AUTH" \
   -H 'content-type: application/json' \
   -H 'idempotency-key: my-request-0001' \
   -d '{"prompt":"Why is the sky blue?"}' | jq -r .run.id)
 
 # Watch it. Kill the connection and re-run with ?afterSeq=<last id> to resume.
-curl -N localhost:8787/api/runs/$RUN/events
+curl -N -H "$AUTH" localhost:8787/api/runs/$RUN/events
 
-curl -s -X POST localhost:8787/api/runs/$RUN/cancel \
+curl -s -X POST localhost:8787/api/runs/$RUN/cancel -H "$AUTH" \
   -H 'content-type: application/json' -d '{"reason":"never mind"}' | jq
 ```
+
+### Identity and access
+
+Two credential kinds reach the API, and they are for different callers:
+
+| Credential | Who | How it is obtained |
+| ---------- | --- | ------------------ |
+| **OAuth access token** | a human at a terminal | `sce auth login` — authorization code + PKCE (`S256`), loopback redirect on an ephemeral `127.0.0.1` port (RFC 8252 §7.3) |
+| **Session token** | the web app (Phase 5) | a Clerk browser session |
+| **API key** | CI, scripts, the SDK | `sce keys create <name>`, or `bun run auth:bootstrap` for the first one |
+
+Authorization is the conjunction of two independent things, and keeping them independent is the
+design: a **role** (`owner` / `admin` / `member` / `viewer`) is what a *person* may do inside a
+tenant; a **scope** (`runs:read`, `keys:write`, …) is what *this credential* may do on their behalf.
+`can(actor, permission, resource)` in `@sce/shared` requires both to agree — so an owner holding a
+read-only key still cannot start a run, and a leaked CI token is not an account takeover.
+
+Two consequences worth knowing:
+
+- **A key's role is its creator's current role**, read at verification time rather than stored. So
+  demoting someone demotes their keys, and removing them from the tenant kills their keys, without
+  anyone having to remember they exist.
+- **A resource in another tenant answers `404`, never `403`.** A 403 would confirm the id is real,
+  which turns a list of guessed ids into a census of another tenant's runs.
+
+```bash
+sce auth login --org acme       # browser sign-in, acting inside one organization
+sce auth status                 # tenant, role and scopes of the current credential
+sce keys create ci --scopes runs:read,runs:write --days 90
+sce keys revoke <key-id>
+```
+
+See `doc/runbooks/clerk-setup.md` for connecting Clerk, and
+`doc/adr/0005-clerk-identity-and-org-as-tenant.md` for why it is built this way.
 
 ### Run events
 
@@ -262,6 +324,8 @@ show each model's raw answer, so you can check the synthesis against its sources
 | `bun run db:status`        | Which migrations are applied               |
 | `bun run db:seed`          | Demo tenant, demo runs, model price list   |
 | `bun run db:studio`        | Browse the database                        |
+| `bun run auth:bootstrap`   | Mint the first API key for a fresh install |
+| `bun run auth:reconcile`   | Repair Clerk↔Postgres drift; exits non-zero if it found any |
 | `bun run dlq <command>`    | Queue depth, dead letters, replay, reap    |
 | `bun run scale-test`       | Multi-process scale and chaos drill        |
 | `bun test`                 | Full suite                                 |
@@ -269,8 +333,8 @@ show each model's raw answer, so you can check the synthesis against its sources
 
 ### Tests
 
-94 tests, no API keys and no network required — every model call runs against
-`MockLanguageModelV4`. Run `bun run db:up` first: the database, queue and bus suites exercise the
+214 tests, no API keys and no network required — every model call runs against
+`MockLanguageModelV4`, and the OAuth flow runs against a stub authorization server on loopback. Run `bun run db:up` first: the database, queue and bus suites exercise the
 real Postgres and Redis, because what they assert (enum enforcement, cascades, flow ordering, the
 backfill/tail join) is precisely what a mock cannot get wrong. `test-setup.ts` moves the suite onto
 its own Redis namespace, so a `bun run dev` fleet in another terminal cannot claim its jobs.
@@ -412,7 +476,7 @@ than being silently swapped for a default at the first request that needed it.
 | `RUN_TRANSPORT`             | `redis`                 | `redis` (scalable) or `local` (one process)    |
 | `REDIS_NAMESPACE`           | `sce`                   | Key prefix; lets environments share an instance |
 | `PORT` / `HOST`             | `8787` / `0.0.0.0`      | API bind                                       |
-| `CORS_ORIGIN`               | `*`                     | Allowed origins for `/api/*` (Phase 3 tightens) |
+| `CORS_ORIGIN`               | `*`                     | Allowed origins for `/api/*`; `*` is refused in production |
 | `EMBED_WORKER`              | `false`                 | Run the worker inside the API process          |
 | `QUEUE_CONCURRENCY`         | `8`                     | Candidate jobs per worker                      |
 | `QUEUE_MAX_ATTEMPTS`        | `3`                     | Deliveries before a job is dead-lettered       |
@@ -428,6 +492,18 @@ than being silently swapped for a default at the first request that needed it.
 | `REAPER_INTERVAL_MS`        | `30000`                 | Deadline sweep; `0` disables                   |
 | `SHUTDOWN_TIMEOUT_MS`       | `30000`                 | How long a drain may take before a hard exit   |
 | `SCE_SERVER_URL`            | `http://localhost:8787` | Where the CLI looks for the API                |
+| `SCE_API_KEY`               | —                       | Non-interactive credential; beats anything stored |
+| `SCE_TENANT`                | —                       | Organization to act inside, for multi-org users |
+| `CLERK_SECRET_KEY`          | —                       | Verifies sessions and OAuth tokens; set with the publishable key or not at all |
+| `CLERK_PUBLISHABLE_KEY`     | —                       | Also encodes the OAuth issuer, so it needs no second variable |
+| `CLERK_WEBHOOK_SIGNING_SECRET` | —                    | Without it the webhook answers `503` rather than trusting unsigned payloads |
+| `CLERK_OAUTH_CLIENT_ID`     | —                       | The public PKCE client `sce auth login` uses    |
+| `CLERK_OAUTH_ISSUER`        | derived                 | Override, for a proxied or custom-domain instance |
+
+The Clerk variables are all optional: without them the API still authenticates API keys — everything
+CI and the SDK need — but cannot accept a browser session or an OAuth token. Set the secret and
+publishable keys **both or neither**; the server refuses to boot half-configured, because that state
+accepts no sessions and reports no error.
 
 `.env.example` lists the rest, with the reasoning next to each.
 
@@ -441,6 +517,7 @@ than being silently swapped for a default at the first request that needed it.
 | [ADR-002](doc/adr/0002-tenancy-columns-before-identity.md) | Tenancy columns before identity                   |
 | [ADR-003](doc/adr/0003-bullmq-for-the-run-queue.md)        | BullMQ on Redis for the run queue                 |
 | [ADR-004](doc/adr/0004-durable-progress-bus.md)            | Postgres for replay, Redis Streams for the tail   |
+| [ADR-005](doc/adr/0005-clerk-identity-and-org-as-tenant.md) | Clerk for identity, organization as tenant, keys minted locally |
 
 ---
 
