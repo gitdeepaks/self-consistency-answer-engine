@@ -1,14 +1,16 @@
 import { zValidator } from "@hono/zod-validator"
 import {
-  defaultTenant,
   deleteRun,
   getRun,
   latestEventSeq,
+  listAuditEvents,
   listRuns,
+  recordAuditSafely,
   usageTotals,
 } from "@sce/db"
 import { queueConfig, runBus } from "@sce/queue"
 import {
+  actorTypeFor,
   assertNever,
   askInputSchema,
   cancelRunInputSchema,
@@ -23,41 +25,95 @@ import {
   type RunEvent,
   type RunStatus,
 } from "@sce/shared"
-import { Hono, type MiddlewareHandler } from "hono"
+import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { streamSSE } from "hono/streaming"
-import { config } from "./env.ts"
+import {
+  actorOf,
+  authorizeResource,
+  requireAuth,
+  requirePermission,
+  type AuthEnv,
+} from "./auth/middleware.ts"
+import { requestProvenance, TENANT_HEADER } from "./auth/resolve.ts"
+import { clerkConfigured, config } from "./env.ts"
 import { describeError } from "./errors.ts"
+import { keys } from "./keys.ts"
 import { cancelRun, startRun } from "./runs.ts"
+import { webhooks } from "./webhooks.ts"
 
 /**
- * Request-scoped values. `tenantId` is resolved by middleware and is the only
- * thing route handlers are allowed to pass to the repository as an owner — no
- * handler reads it from anywhere else, so Phase 3 changes how it is derived and
- * nothing downstream moves.
- */
-type Env = { Variables: { tenantId: string } }
-
-/**
- * Attach the owning tenant to the request.
+ * Request-scoped values.
  *
- * Until Phase 3 authenticates callers there is exactly one tenant, but every
- * data path below is already written as if there were many — which is what
- * makes adding real identity a change of one middleware rather than a change of
- * every query.
+ * `actor` is resolved once, by `requireAuth`, and is the only thing a route
+ * handler may pass to the repository as an owner. No handler reads a tenant
+ * from a header, a query parameter or a body — which is what makes the
+ * isolation guarantee hold for routes nobody has written yet, and what
+ * `isolation.test.ts` exists to keep true.
  */
-const withTenant: MiddlewareHandler<Env> = async (c, next) => {
-  c.set("tenantId", (await defaultTenant()).id)
-  await next()
-}
+type Env = AuthEnv
 
+/**
+ * Routes that serve no tenant data, and therefore need no principal.
+ *
+ * This is the complete public surface, and it is short on purpose:
+ *
+ *   `/health`      — a liveness probe must not touch the database or Clerk.
+ *   `/providers`   — answered from configuration; reveals no tenant's anything.
+ *   `/auth/config` — the OAuth discovery document `sce auth login` reads
+ *                    *before* it has a credential. Chicken and egg: it cannot
+ *                    be authenticated.
+ *   `/webhooks/*`  — authenticated by Svix signature instead, since the caller
+ *                    is Clerk rather than a user.
+ *
+ * Everything else is behind `requireAuth`. The allowlist lives here, in the
+ * route table, rather than in a path matcher somewhere else — a route added
+ * below without a thought is protected, which is the right default.
+ */
 const api = new Hono<Env>()
-  // Registered before the routes they guard; `/health` and `/providers` stay
-  // out of scope deliberately so a liveness probe never touches the database.
-  .use("/runs", withTenant)
-  .use("/runs/*", withTenant)
-  .use("/usage", withTenant)
+  .use("/runs", requireAuth)
+  .use("/runs/*", requireAuth)
+  .use("/usage", requireAuth)
+  .use("/keys", requireAuth)
+  .use("/keys/*", requireAuth)
+  .use("/audit", requireAuth)
+  .use("/auth/whoami", requireAuth)
+
+  /**
+   * What a client needs to authenticate, before it can authenticate.
+   *
+   * `sce auth login` reads this to discover the authorization server and the
+   * public OAuth client id, so the CLI works against any deployment without
+   * being configured for it. Everything here is public by construction: a
+   * public OAuth client has no secret, and the issuer is the address of a login
+   * page.
+   */
+  .get("/auth/config", (c) => {
+    const { issuer, oauthClientId } = config.clerk
+    return c.json({
+      // False means this install accepts API keys only. The CLI reads it and
+      // says so, instead of opening a browser to a URL that does not exist.
+      interactiveLoginAvailable: clerkConfigured() && issuer !== null && oauthClientId !== null,
+      issuer,
+      clientId: oauthClientId,
+      /** RFC 8414 discovery. The CLI reads the real endpoints from here. */
+      discoveryUrl: issuer === null ? null : `${issuer}/.well-known/oauth-authorization-server`,
+      tenantHeader: TENANT_HEADER,
+    })
+  })
+
+  /** Who the current credential resolves to. The CLI's `sce auth status`. */
+  .get("/auth/whoami", (c) => {
+    const actor = actorOf(c)
+    return c.json({
+      credential: actor.credential,
+      tenantId: actor.tenantId,
+      userId: actor.userId,
+      role: actor.role,
+      scopes: actor.scopes,
+    })
+  })
 
   .get("/health", (c) =>
     c.json({
@@ -96,24 +152,37 @@ const api = new Hono<Env>()
    */
   .post(
     "/runs",
+    requirePermission("run.create"),
     zValidator("json", askInputSchema),
     zValidator("header", runHeadersSchema),
     async (c) => {
+      const actor = actorOf(c)
       const headers = c.req.valid("header")
-      const { run, created } = await startRun(c.get("tenantId"), c.req.valid("json"), {
+      const { run, created } = await startRun(actor.tenantId, c.req.valid("json"), {
         idempotencyKey: headers["idempotency-key"] ?? null,
+        // Ownership is recorded at creation, which is what lets `can()` answer
+        // "your run or a colleague's?" later without a second lookup.
+        createdByUserId: actor.userId,
       })
       return c.json({ run }, created ? 201 : 200)
     },
   )
 
-  .get("/runs", zValidator("query", listQueriesInputSchema), async (c) => {
-    const { limit, cursor } = c.req.valid("query")
-    return c.json(await listRuns({ tenantId: c.get("tenantId"), limit, cursor }))
-  })
+  .get(
+    "/runs",
+    requirePermission("run.read"),
+    zValidator("query", listQueriesInputSchema),
+    async (c) => {
+      const { limit, cursor } = c.req.valid("query")
+      return c.json(await listRuns({ tenantId: actorOf(c).tenantId, limit, cursor }))
+    },
+  )
 
-  .get("/runs/:id", async (c) => {
-    const run = await getRun(c.get("tenantId"), c.req.param("id"))
+  .get("/runs/:id", requirePermission("run.read"), async (c) => {
+    const actor = actorOf(c)
+    const run = await getRun(actor.tenantId, c.req.param("id"))
+    // Already tenant-scoped by the query, so a run belonging to somebody else
+    // is indistinguishable from one that does not exist — which is the point.
     if (!run) return c.json({ error: "Run not found" }, 404)
     return c.json({ run })
   })
@@ -125,27 +194,91 @@ const api = new Hono<Env>()
    * first and the fast-path signal published second, so the guarantee does not
    * depend on the signal arriving.
    */
-  .post("/runs/:id/cancel", zValidator("json", cancelRunInputSchema), async (c) => {
-    const outcome = await cancelRun(
-      c.get("tenantId"),
-      c.req.param("id"),
-      c.req.valid("json").reason ?? "Canceled by request",
-    )
+  .post(
+    "/runs/:id/cancel",
+    requirePermission("run.cancel"),
+    zValidator("json", cancelRunInputSchema),
+    async (c) => {
+      const actor = actorOf(c)
+      const runId = c.req.param("id")
+      const reason = c.req.valid("json").reason ?? "Canceled by request"
 
-    if (outcome.outcome === "not-found") return c.json({ error: "Run not found" }, 404)
-    // Already finished is not an error — a client that cancels a run which
-    // completed a moment earlier got what it wanted, just not because of this.
-    return c.json({ run: outcome.run, canceled: outcome.outcome === "canceled" })
-  })
+      // Loaded before acting, because cancelling somebody else's run is a
+      // question about *that* run's owner — a permission the actor holds in
+      // general does not settle it.
+      const existing = await getRun(actor.tenantId, runId)
+      if (!existing) return c.json({ error: "Run not found" }, 404)
 
-  .delete("/runs/:id", async (c) => {
-    const deleted = await deleteRun(c.get("tenantId"), c.req.param("id"))
+      const denied = authorizeResource(c, "run.cancel", {
+        tenantId: actor.tenantId,
+        createdByUserId: existing.createdByUserId,
+      })
+      if (denied) return denied
+
+      const outcome = await cancelRun(actor.tenantId, runId, reason)
+      if (outcome.outcome === "not-found") return c.json({ error: "Run not found" }, 404)
+
+      if (outcome.outcome === "canceled") {
+        const { ip, userAgent } = requestProvenance(c.req.raw)
+        await recordAuditSafely({
+          tenantId: actor.tenantId,
+          action: "RUN_CANCELED",
+          actorType: actorTypeFor(actor.credential),
+          actorId: actor.userId ?? actor.credentialId,
+          resourceType: "run",
+          resourceId: runId,
+          ip,
+          userAgent,
+          metadata: { reason },
+        })
+      }
+
+      // Already finished is not an error — a client that cancels a run which
+      // completed a moment earlier got what it wanted, just not because of this.
+      return c.json({ run: outcome.run, canceled: outcome.outcome === "canceled" })
+    },
+  )
+
+  .delete("/runs/:id", requirePermission("run.delete"), async (c) => {
+    const actor = actorOf(c)
+    const runId = c.req.param("id")
+
+    const existing = await getRun(actor.tenantId, runId)
+    if (!existing) return c.json({ error: "Run not found" }, 404)
+
+    const denied = authorizeResource(c, "run.delete", {
+      tenantId: actor.tenantId,
+      createdByUserId: existing.createdByUserId,
+    })
+    if (denied) return denied
+
+    const deleted = await deleteRun(actor.tenantId, runId)
     if (!deleted) return c.json({ error: "Run not found" }, 404)
+
+    const { ip, userAgent } = requestProvenance(c.req.raw)
+    await recordAuditSafely({
+      tenantId: actor.tenantId,
+      action: "RUN_DELETED",
+      actorType: actorTypeFor(actor.credential),
+      actorId: actor.userId ?? actor.credentialId,
+      resourceType: "run",
+      resourceId: runId,
+      ip,
+      userAgent,
+    })
+
     return c.json({ ok: true })
   })
 
   /** Metered spend for the calling tenant. Quota enforcement lands in Phase 4. */
-  .get("/usage", async (c) => c.json({ usage: await usageTotals({ tenantId: c.get("tenantId") }) }))
+  .get("/usage", requirePermission("usage.read"), async (c) =>
+    c.json({ usage: await usageTotals({ tenantId: actorOf(c).tenantId }) }),
+  )
+
+  /** The append-only audit trail. Owners and admins only, by role. */
+  .get("/audit", requirePermission("audit.read"), async (c) =>
+    c.json({ events: await listAuditEvents({ tenantId: actorOf(c).tenantId }) }),
+  )
 
   /**
    * Live progress for a run.
@@ -161,8 +294,12 @@ const api = new Hono<Env>()
    * sends by itself) or `?afterSeq=`. Both are parsed, because both are network
    * input that ends up in a database predicate.
    */
-  .get("/runs/:id/events", zValidator("query", eventStreamQuerySchema), async (c) => {
-    const tenantId = c.get("tenantId")
+  .get(
+    "/runs/:id/events",
+    requirePermission("run.read"),
+    zValidator("query", eventStreamQuerySchema),
+    async (c) => {
+    const tenantId = actorOf(c).tenantId
     const runId = c.req.param("id")
 
     const run = await getRun(tenantId, runId)
@@ -221,7 +358,15 @@ const api = new Hono<Env>()
         controller.abort()
       }
     })
-  })
+    },
+  )
+
+  // Mounted rather than inlined: both are self-contained surfaces with their
+  // own guards — `keys` behind `requireAuth` above, `webhooks` behind a Svix
+  // signature instead of a principal — and the RPC types propagate through
+  // `.route()` exactly as they do for a chained handler.
+  .route("/keys", keys)
+  .route("/webhooks", webhooks)
 
 /**
  * The closing event for a run that concluded before anyone subscribed, or null
@@ -258,7 +403,26 @@ const app = new Hono()
 
 // Bun sets NODE_ENV=test during `bun test`; request logs would drown the output.
 if (process.env.NODE_ENV !== "test") app.use(logger())
-app.use("/api/*", cors({ origin: config.corsOrigin }))
+/**
+ * CORS.
+ *
+ * The wildcard default is gone in anything but development (`env.ts` refuses to
+ * boot with it in production). The header allowlist is explicit because a
+ * browser will not send `Authorization` or the tenant selector unless it is
+ * named here, and `credentials: true` is what lets Clerk's session cookie reach
+ * the API from the web app's origin.
+ */
+app.use(
+  "/api/*",
+  cors({
+    origin: config.corsOrigin,
+    allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key", TENANT_HEADER],
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    exposeHeaders: ["WWW-Authenticate"],
+    credentials: config.corsOrigin !== "*",
+    maxAge: 600,
+  }),
+)
 
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404))
 app.onError((error, c) => {
@@ -279,6 +443,13 @@ app.get("/", (c) =>
       "GET  /api/runs/:id/events": "SSE progress stream (Last-Event-ID or ?afterSeq)",
       "DEL  /api/runs/:id": "delete a run",
       "GET  /api/usage": "token and cost totals for the calling tenant",
+      "GET  /api/audit": "append-only audit trail for the calling tenant",
+      "GET  /api/auth/config": "OAuth issuer + public client id for `sce auth login`",
+      "GET  /api/auth/whoami": "the principal behind the current credential",
+      "GET  /api/keys": "list API keys (secrets are never returned)",
+      "POST /api/keys": "{ name, scopes?, expiresInDays? } -> a key, shown once",
+      "DEL  /api/keys/:id": "revoke a key, effective immediately",
+      "POST /api/webhooks/clerk": "Clerk -> Postgres identity sync (Svix-signed)",
     },
   }),
 )

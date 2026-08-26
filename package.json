@@ -25,6 +25,8 @@
     "db:deploy": "bun run --filter @sce/db db:deploy",
     "db:status": "bun run --filter @sce/db db:status",
     "db:seed": "bun run --filter @sce/db db:seed",
+    "auth:bootstrap": "bun run packages/db/src/bootstrap.ts",
+    "auth:reconcile": "bun run packages/server/src/reconcile.ts",
     "db:studio": "bun run --filter @sce/db db:studio",
     "build": "bun run --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",

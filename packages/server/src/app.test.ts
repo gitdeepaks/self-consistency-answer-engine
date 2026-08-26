@@ -1,6 +1,6 @@
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test"
-import { runEventSchema, runSchema, runSummarySchema, usageTotalsSchema } from "@sce/shared"
+import { ALL_SCOPES, runEventSchema, runSchema, runSummarySchema, usageTotalsSchema } from "@sce/shared"
 import type { ProviderId, Run, RunEvent } from "@sce/shared"
 import { MockLanguageModelV4 } from "ai/test"
 import { z } from "zod"
@@ -149,11 +149,28 @@ beforeAll(() => {
 })
 
 const { app } = await import("./app.ts")
-const { defaultTenant, deleteRun } = await import("@sce/db")
+const { createApiKey, defaultTenant, deleteRun, prisma } = await import("@sce/db")
 
-// The HTTP surface resolves the default tenant per request, so cleanup has to
+// The HTTP surface resolves the tenant from the credential, so cleanup has to
 // scope itself the same way.
 const tenantId = (await defaultTenant()).id
+
+/**
+ * These tests authenticate exactly the way a real client does.
+ *
+ * A mint-a-real-key-and-send-it setup costs three lines and buys the thing a
+ * mocked principal cannot: the middleware, the key parser, the constant-time
+ * comparison and the tenant resolution are all under test on every single
+ * request below. A stubbed actor would let all four of them break silently.
+ */
+const bootstrap = await createApiKey({
+  tenantId,
+  createdByUserId: null,
+  name: "app.test.ts",
+  scopes: ALL_SCOPES,
+  expiresAt: null,
+})
+const AUTH = { Authorization: `Bearer ${bootstrap.token}` }
 
 const created: string[] = []
 
@@ -161,11 +178,20 @@ afterAll(async () => {
   // Wait for anything still executing before tearing down its rows.
   await localQueue.close()
   for (const id of created) await deleteRun(tenantId, id).catch(() => {})
+  await prisma.apiKey.deleteMany({ where: { id: bootstrap.key.id } }).catch(() => {})
   setLocalRunJobHandlers(null)
 })
 
-async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
+/** Every request in this suite is authenticated unless it says otherwise. */
+async function request(path: string, init: RequestInit = {}) {
   return app.request(path, {
+    ...init,
+    headers: { ...AUTH, ...init.headers },
+  })
+}
+
+async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
+  return request(path, {
     method: "POST",
     body: JSON.stringify(body),
     headers: { "Content-Type": "application/json", ...headers },
@@ -231,13 +257,13 @@ async function readEvents(body: ReadableStream<Uint8Array>): Promise<RunEvent[]>
 
 describe("http api", () => {
   test("GET /api/health", async () => {
-    const res = await app.request("/api/health")
+    const res = await request("/api/health")
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, role: "api" })
   })
 
   test("GET /api/providers lists the panel and the evaluator", async () => {
-    const res = await app.request("/api/providers")
+    const res = await request("/api/providers")
     const providers = await readJson(res, providersEnvelope)
     expect(providers.panel.map((p) => p.id)).toEqual(["openai", "anthropic", "google"])
     expect(providers.evaluator.role).toBe("evaluator")
@@ -259,7 +285,7 @@ describe("http api", () => {
   test("SSE replays the full timeline and ends on run.completed", async () => {
     const run = await startRun("Explain event sourcing")
 
-    const res = await app.request(`/api/runs/${run.id}/events`)
+    const res = await request(`/api/runs/${run.id}/events`)
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toContain("text/event-stream")
 
@@ -290,7 +316,7 @@ describe("http api", () => {
   test("SSE resumes from Last-Event-ID without repeating what was seen", async () => {
     const run = await startRun("Resume me")
     const { ids } = await readStream(
-      streamBody(await app.request(`/api/runs/${run.id}/events`)),
+      streamBody(await request(`/api/runs/${run.id}/events`)),
     )
 
     const lastId = ids.filter((id): id is string => id !== null).at(-1)
@@ -298,7 +324,7 @@ describe("http api", () => {
 
     // Everything is already delivered, so resuming from the tail yields only
     // the synthetic closing frames — never a replay of the whole timeline.
-    const res = await app.request(`/api/runs/${run.id}/events`, {
+    const res = await request(`/api/runs/${run.id}/events`, {
       headers: { "last-event-id": lastId ?? "0" },
     })
     const events = await readEvents(streamBody(res))
@@ -339,9 +365,9 @@ describe("http api", () => {
 
   test("GET /api/runs/:id returns the persisted run once finished", async () => {
     const run = await startRun("Summarise CAP theorem")
-    await readEvents(streamBody(await app.request(`/api/runs/${run.id}/events`)))
+    await readEvents(streamBody(await request(`/api/runs/${run.id}/events`)))
 
-    const res = await app.request(`/api/runs/${run.id}`)
+    const res = await request(`/api/runs/${run.id}`)
     const { run: stored } = await readJson(res, runEnvelope)
     expect(stored.status).toBe("COMPLETE")
     expect(stored.synthesis?.finalAnswer).toBe("The merged answer.")
@@ -349,35 +375,35 @@ describe("http api", () => {
   })
 
   test("GET /api/runs paginates history newest-first", async () => {
-    const res = await app.request("/api/runs?limit=2")
+    const res = await request("/api/runs?limit=2")
     const history = await readJson(res, historyEnvelope)
     expect(history.items.length).toBeLessThanOrEqual(2)
     expect(history).toHaveProperty("nextCursor")
   })
 
   test("GET /api/usage reports metered spend for the tenant", async () => {
-    const res = await app.request("/api/usage")
+    const res = await request("/api/usage")
     expect(res.status).toBe(200)
     const { usage } = await readJson(res, usageEnvelope)
     expect(usage.calls).toBeGreaterThan(0)
   })
 
   test("unknown run ids 404 on read, stream and delete", async () => {
-    expect((await app.request("/api/runs/nope")).status).toBe(404)
-    expect((await app.request("/api/runs/nope/events")).status).toBe(404)
-    expect((await app.request("/api/runs/nope", { method: "DELETE" })).status).toBe(404)
+    expect((await request("/api/runs/nope")).status).toBe(404)
+    expect((await request("/api/runs/nope/events")).status).toBe(404)
+    expect((await request("/api/runs/nope", { method: "DELETE" })).status).toBe(404)
   })
 
   test("DELETE /api/runs/:id removes the run", async () => {
     const run = await startRun("Something disposable")
-    await readEvents(streamBody(await app.request(`/api/runs/${run.id}/events`)))
+    await readEvents(streamBody(await request(`/api/runs/${run.id}/events`)))
 
-    expect((await app.request(`/api/runs/${run.id}`, { method: "DELETE" })).status).toBe(200)
-    expect((await app.request(`/api/runs/${run.id}`)).status).toBe(404)
+    expect((await request(`/api/runs/${run.id}`, { method: "DELETE" })).status).toBe(200)
+    expect((await request(`/api/runs/${run.id}`)).status).toBe(404)
   })
 
   test("unknown paths return a JSON 404", async () => {
-    const res = await app.request("/api/nope")
+    const res = await request("/api/nope")
     expect(res.status).toBe(404)
     expect(await res.json()).toMatchObject({ error: "Not found" })
   })
