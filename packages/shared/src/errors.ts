@@ -48,8 +48,59 @@ function parseRetryAfter(raw: string | undefined): number | null {
   return Math.max(0, at - Date.now())
 }
 
+/**
+ * Wrapper errors that carry the error that actually happened underneath.
+ *
+ * The AI SDK's `AI_RetryError` is the one that matters: when every internal
+ * attempt fails it throws a wrapper whose own `statusCode` is undefined and
+ * hangs the real `APICallError`s off `errors` / `lastError`. Reading only the
+ * outer value turns a 429 with a `retry-after` into an anonymous, statusless
+ * error — which then classifies as permanent, never trips the breaker, and
+ * throws away the provider's own retry hint.
+ */
+const wrapperShapeSchema = z.object({
+  cause: z.unknown().optional(),
+  lastError: z.unknown().optional(),
+  errors: z.array(z.unknown()).optional(),
+})
+
+/** Deepest nesting worth walking; also the guard against a cyclic `cause`. */
+const MAX_UNWRAP_DEPTH = 8
+
+function statusOf(error: unknown): number | null {
+  const shape = httpErrorShapeSchema.safeParse(error)
+  if (!shape.success) return null
+  return shape.data.statusCode ?? shape.data.status ?? null
+}
+
+/**
+ * Walk a wrapped error down to the first link that carries an HTTP status.
+ *
+ * Falls back to the value it was given, so an error that was never wrapped —
+ * and one whose chain says nothing useful — behaves exactly as before.
+ */
+function unwrapToStatus(error: unknown, depth = 0): unknown {
+  if (depth >= MAX_UNWRAP_DEPTH) return error
+  if (statusOf(error) !== null) return error
+
+  const shape = wrapperShapeSchema.safeParse(error)
+  if (!shape.success) return error
+
+  // `lastError` first: for a retry wrapper it is the attempt whose failure
+  // actually ended the call, and so the one whose `retry-after` is current.
+  const attempts = (shape.data.errors ?? []).slice().reverse()
+  const links = [shape.data.lastError, ...attempts, shape.data.cause]
+  for (const link of links) {
+    if (link === undefined || link === null) continue
+    const found = unwrapToStatus(link, depth + 1)
+    if (statusOf(found) !== null) return found
+  }
+  return error
+}
+
 /** Everything structured that can be recovered from a thrown value. */
-export function errorFacts(error: unknown): ErrorFacts {
+export function errorFacts(value: unknown): ErrorFacts {
+  const error = unwrapToStatus(value)
   const shape = httpErrorShapeSchema.safeParse(error)
   const status = shape.success ? (shape.data.statusCode ?? shape.data.status ?? null) : null
   const headers = shape.success ? shape.data.responseHeaders : undefined

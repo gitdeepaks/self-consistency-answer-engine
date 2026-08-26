@@ -246,12 +246,19 @@ async function handleFailure(
 ): Promise<void> {
   // An abort carries our own reason — the timeout's, or the cancellation's —
   // which is far more useful on the row than the SDK's generic AbortError.
+  //
+  // The timeout must not *hide* a provider error, though. A call that spends
+  // its whole budget being rate-limited and then trips the deadline used to
+  // report only "exceeded its 120s budget", which sends the reader looking for
+  // a slow model when the real answer was a 429 and a quota to raise. When the
+  // failure carries an HTTP status, it is a real provider error and it is named
+  // alongside the budget that ran out.
   const reason = failure.canceled
     ? "Canceled by request"
     : failure.timedOut
       ? `${provider.spec.label} call exceeded its ${Math.round(
           workerConfig.PER_MODEL_TIMEOUT_MS / 1000,
-        )}s budget`
+        )}s budget${providerErrorSuffix(failure.error)}`
       : describeError(failure.error)
 
   await recordProviderOutcome(candidate.provider, { ok: false, error: failure.error })
@@ -296,6 +303,11 @@ async function handleFailure(
         })
 
   await ctx.emit({ type: "candidate.settled", runId: ctx.runId, candidate: settled })
+}
+
+/** `" — last provider error: …"`, but only when there really was one. */
+function providerErrorSuffix(error: unknown): string {
+  return errorFacts(error).status === null ? "" : ` — last provider error: ${describeError(error)}`
 }
 
 async function settleAndEmit(
