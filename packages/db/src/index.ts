@@ -1,3 +1,4 @@
+export * from "./auth.ts"
 export * from "./blob.ts"
 export * from "./client.ts"
 export * from "./repository.ts"

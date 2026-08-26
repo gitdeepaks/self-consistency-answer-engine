@@ -168,6 +168,12 @@ export type Synthesis = z.infer<typeof synthesisSchema>
 
 export const runSchema = z.object({
   id: z.string(),
+  /**
+   * The person who started the run, or null for one created before identity
+   * existed. Present so ownership is a property callers can see and `can()` can
+   * check, rather than something only the database knows.
+   */
+  createdByUserId: z.string().nullable(),
   prompt: z.string(),
   status: runStatusSchema,
   error: z.string().nullable(),

@@ -4,35 +4,78 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 /**
- * Static guard: no unscoped query may enter the repository.
+ * Static guard: no unscoped query may enter the data layer.
  *
  * The live isolation suite proves today's queries are scoped. This proves the
  * *next* one will be too — it fails on a new `prisma.<model>.<op>()` whose
  * filter never mentions the tenant, which is the shape every cross-tenant leak
  * takes. Deliberate exceptions are listed here with a reason, so adding one is
  * a visible decision in the diff rather than an omission.
+ *
+ * Two files are scanned. `repository.ts` holds the runs and everything hanging
+ * off them; `auth.ts` holds credentials and the audit trail. `tenancy.ts` is
+ * deliberately *not* scanned: it is the file that creates tenants and
+ * memberships in the first place, so "filters by tenant" is not a property it
+ * can have — it is the thing every other query's filter refers to.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const SOURCE = readFileSync(path.join(HERE, "repository.ts"), "utf8")
 
-/** Models that belong to no tenant, plus why. */
-const GLOBAL_MODELS: Record<string, string> = {
-  modelPrice: "the price list is install-global reference data, owned by nobody",
+interface Scanned {
+  file: string
+  source: string
+  /** Models that belong to no tenant, plus why. */
+  globalModels: Record<string, string>
+  /** Calls whose scoping is proven by their surroundings rather than their own filter. */
+  exemptCalls: Record<string, string>
+  /** Exported functions that legitimately take no owner, plus why. */
+  exemptFunctions: Record<string, string>
 }
 
-/**
- * Calls whose scoping is proven by their surroundings rather than their own
- * filter. Each entry has to justify itself.
- */
-const EXEMPT_CALLS: Record<string, string> = {
-  "runEvent.create":
-    "runs inside appendRunEvent's transaction, immediately after a tenant-scoped " +
-    "update of the owning run — the insert cannot be reached for a foreign tenant",
-  "synthesis.upsert":
-    "keyed on the unique runId, which saveSynthesis obtains from a tenant-scoped " +
-    "lookup performed immediately above — a foreign tenant never reaches the write",
-}
+const FILES: Scanned[] = [
+  {
+    file: "repository.ts",
+    source: readFileSync(path.join(HERE, "repository.ts"), "utf8"),
+    globalModels: {
+      modelPrice: "the price list is install-global reference data, owned by nobody",
+    },
+    exemptCalls: {
+      "runEvent.create":
+        "runs inside appendRunEvent's transaction, immediately after a tenant-scoped " +
+        "update of the owning run — the insert cannot be reached for a foreign tenant",
+      "synthesis.upsert":
+        "keyed on the unique runId, which saveSynthesis obtains from a tenant-scoped " +
+        "lookup performed immediately above — a foreign tenant never reaches the write",
+    },
+    exemptFunctions: {
+      findPrice: "reads the install-global price list",
+      upsertModelPrice: "writes the install-global price list",
+      listOverdueRuns: "takes a RunScope, whose cross-tenant variant is explicit at the call site",
+    },
+  },
+  {
+    file: "auth.ts",
+    source: readFileSync(path.join(HERE, "auth.ts"), "utf8"),
+    globalModels: {
+      webhookDelivery:
+        "a Svix delivery id is globally unique and is claimed before any tenant is known — " +
+        "the row exists to deduplicate retries, and belongs to the install",
+    },
+    exemptCalls: {
+      "apiKey.findUnique":
+        "this IS the authentication lookup — it is what decides which tenant the request " +
+        "belongs to, so it cannot be filtered by one. Keyed on the unique prefix and " +
+        "followed by a constant-time secret comparison",
+      "membership.findUnique":
+        "resolves the key creator's current role inside the key's own tenant; the compound " +
+        "key names that tenant explicitly",
+    },
+    exemptFunctions: {
+      verifyApiKey: "resolves the tenant from a credential — it cannot be given one",
+      claimWebhookDelivery: "deduplicates an inbound webhook before any tenant is known",
+    },
+  },
+]
 
 interface Call {
   model: string
@@ -93,7 +136,7 @@ function isScoped(args: string): boolean {
  * that could not tell the difference would push the codebase towards inline
  * types purely to satisfy the test.
  */
-function mentionsTenant(params: string, depth = 0): boolean {
+function mentionsTenant(source: string, params: string, depth = 0): boolean {
   if (/\btenantId\b/.test(params)) return true
   if (depth > 2) return false
 
@@ -102,40 +145,47 @@ function mentionsTenant(params: string, depth = 0): boolean {
     if (typeName === undefined) continue
     const declaration = new RegExp(
       `(?:interface|type)\\s+${typeName}\\b[^{]*\\{([\\s\\S]*?)\\n\\}`,
-    ).exec(SOURCE)
-    if (declaration?.[1] && mentionsTenant(declaration[1], depth + 1)) return true
+    ).exec(source)
+    if (declaration?.[1] && mentionsTenant(source, declaration[1], depth + 1)) return true
   }
   return false
 }
 
-describe("repository query scoping", () => {
-  const calls = findCalls(SOURCE)
-
+describe("data layer query scoping", () => {
   test("the scanner actually found the queries", () => {
-    expect(calls.length).toBeGreaterThan(15)
-    expect(calls.some((c) => c.model === "run" && c.method === "findUnique")).toBe(true)
+    const all = FILES.flatMap((scanned) => findCalls(scanned.source))
+    expect(all.length).toBeGreaterThan(20)
+    expect(all.some((c) => c.model === "run" && c.method === "findUnique")).toBe(true)
+    expect(all.some((c) => c.model === "apiKey")).toBe(true)
   })
 
-  test("every tenant-owned query filters on tenantId", () => {
-    const unscoped = calls
-      .filter((call) => !(call.model in GLOBAL_MODELS))
-      .filter((call) => !(`${call.model}.${call.method}` in EXEMPT_CALLS))
-      .filter((call) => !isScoped(call.args))
-      .map((call) => `repository.ts:${call.line} — prisma.${call.model}.${call.method}()`)
+  for (const scanned of FILES) {
+    describe(scanned.file, () => {
+      const calls = findCalls(scanned.source)
 
-    expect(unscoped).toEqual([])
-  })
+      test("every tenant-owned query filters on tenantId", () => {
+        const unscoped = calls
+          .filter((call) => !(call.model in scanned.globalModels))
+          .filter((call) => !(`${call.model}.${call.method}` in scanned.exemptCalls))
+          .filter((call) => !isScoped(call.args))
+          .map((call) => `${scanned.file}:${call.line} — prisma.${call.model}.${call.method}()`)
 
-  test("every exported function takes a tenantId", () => {
-    const missing: string[] = []
-    for (const match of SOURCE.matchAll(/export (?:async )?function (\w+)\(([\s\S]*?)\)\s*:/g)) {
-      const [, name = "", params = ""] = match
-      // Pure row mappers take a row, not an owner; they cannot query anything.
-      if (name.startsWith("to") || name === "findPrice" || name === "upsertModelPrice") continue
-      // Takes a RunScope instead — see the run.findMany exemption above.
-      if (name === "listOverdueRuns") continue
-      if (!mentionsTenant(params)) missing.push(name)
-    }
-    expect(missing).toEqual([])
-  })
+        expect(unscoped).toEqual([])
+      })
+
+      test("every exported function takes a tenantId", () => {
+        const missing: string[] = []
+        const pattern = /export (?:async )?function (\w+)\(([\s\S]*?)\)\s*:/g
+
+        for (const match of scanned.source.matchAll(pattern)) {
+          const [, name = "", params = ""] = match
+          // Pure row mappers take a row, not an owner; they cannot query anything.
+          if (name.startsWith("to")) continue
+          if (name in scanned.exemptFunctions) continue
+          if (!mentionsTenant(scanned.source, params)) missing.push(name)
+        }
+        expect(missing).toEqual([])
+      })
+    })
+  }
 })

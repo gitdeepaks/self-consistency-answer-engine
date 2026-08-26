@@ -146,6 +146,7 @@ export async function toRun(
 ): Promise<Run> {
   return {
     id: row.id,
+    createdByUserId: row.createdByUserId,
     prompt: row.prompt,
     status: row.status,
     error: row.error,
@@ -659,6 +660,7 @@ export async function listRuns(options: {
   return {
     items: page.map((row) => ({
       id: row.id,
+      createdByUserId: row.createdByUserId,
       prompt: row.prompt,
       status: row.status,
       error: row.error,

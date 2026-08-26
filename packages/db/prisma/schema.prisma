@@ -20,7 +20,9 @@ generator client {
   output   = "../generated"
 }
 
-/* ----------------------------------------------------------------- enums */
+/**
+ * ----------------------------------------------------------------- enums
+ */
 
 /// Lifecycle of a whole run.
 ///
@@ -62,26 +64,61 @@ enum MemberRole {
   viewer
 }
 
+/// Who performed an audited action. Lowercase would not match the shared union;
+/// these labels are identical on both sides so no mapping layer exists.
+enum ActorType {
+  USER
+  API_KEY
+  SYSTEM
+}
+
+/// What happened, in the append-only audit log. SCREAMING_SNAKE because a
+/// dotted name is not a valid Postgres enum label, and a mapping layer between
+/// the database and `auditActionSchema` is exactly where the two would drift.
+enum AuditAction {
+  AUTH_SUCCEEDED
+  AUTH_FAILED
+  API_KEY_CREATED
+  API_KEY_REVOKED
+  MEMBER_ADDED
+  MEMBER_ROLE_CHANGED
+  MEMBER_REMOVED
+  TENANT_CREATED
+  TENANT_UPDATED
+  TENANT_DELETED
+  USER_SYNCED
+  USER_DELETED
+  RUN_CANCELED
+  RUN_DELETED
+}
+
 /// Which leg of a run a metered model call belongs to.
 enum UsageKind {
   CANDIDATE
   EVALUATOR
 }
 
-/* --------------------------------------------------------------- tenancy */
+/**
+ * --------------------------------------------------------------- tenancy
+ */
 
 model Tenant {
-  id        String    @id @default(cuid())
+  id         String    @id @default(cuid())
   /// URL-safe handle, unique across the install.
-  slug      String    @unique
-  name      String
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  deletedAt DateTime?
+  slug       String    @unique
+  name       String
+  /// Clerk organization id. Null for tenants this install created itself — the
+  /// bootstrap workspace, and anything seeded before an org existed upstream.
+  externalId String?   @unique
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
 
   memberships Membership[]
   runs        Run[]
   usage       UsageRecord[]
+  apiKeys     ApiKey[]
+  auditEvents AuditEvent[]
 
   @@index([createdAt])
 }
@@ -96,8 +133,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships Membership[]
-  createdRuns Run[]        @relation("RunCreatedBy")
+  memberships    Membership[]
+  createdRuns    Run[]        @relation("RunCreatedBy")
+  createdApiKeys ApiKey[]     @relation("ApiKeyCreatedBy")
 }
 
 model Membership {
@@ -116,7 +154,9 @@ model Membership {
   @@index([userId])
 }
 
-/* ------------------------------------------------------------------ runs */
+/**
+ * ------------------------------------------------------------------ runs
+ */
 
 model Run {
   id              String  @id @default(cuid())
@@ -150,8 +190,8 @@ model Run {
   /// Set when a caller cancels. The worker observes it between steps; the
   /// cancellation is also published on Redis pub/sub so an in-flight model call
   /// aborts immediately rather than at the next checkpoint.
-  canceledAt     DateTime?
-  cancelReason   String?
+  canceledAt   DateTime?
+  cancelReason String?
 
   /// Monotonic allocator for `RunEvent.seq`. Incremented inside the same
   /// transaction that writes the event, so sequence numbers are gap-free even
@@ -162,8 +202,8 @@ model Run {
   updatedAt   DateTime  @updatedAt
   completedAt DateTime?
 
-  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy User?         @relation("RunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy  User?         @relation("RunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   candidates Candidate[]
   synthesis  Synthesis?
   events     RunEvent[]
@@ -194,9 +234,9 @@ model Candidate {
 
   /// Inline answer body. Null when the body exceeded the inline threshold and
   /// was offloaded — see `contentRef`.
-  content    String?
+  content      String?
   /// Object-store key for an offloaded answer body.
-  contentRef String?
+  contentRef   String?
   /// Size of the answer body in bytes, inline or offloaded.
   contentBytes Int?
 
@@ -231,11 +271,11 @@ model Synthesis {
   finalAnswerBytes Int?
 
   /// string[] — claims every model converged on.
-  agreements    Json @default("[]")
+  agreements    Json  @default("[]")
   /// string[] — points of conflict and their resolution.
-  disagreements Json @default("[]")
+  disagreements Json  @default("[]")
   /// CandidateReview[] — per-candidate scoring.
-  reviews       Json @default("[]")
+  reviews       Json  @default("[]")
   confidence    Float @default(0)
 
   latencyMs    Int?
@@ -246,7 +286,9 @@ model Synthesis {
   updatedAt DateTime @updatedAt
 }
 
-/* ---------------------------------------------------- durable event log */
+/**
+ * ---------------------------------------------------- durable event log
+ */
 
 /// Append-only progress log for a run.
 ///
@@ -270,7 +312,9 @@ model RunEvent {
   @@unique([runId, seq])
 }
 
-/* ------------------------------------------------------- usage and cost */
+/**
+ * ------------------------------------------------------- usage and cost
+ */
 
 /// One metered model call. Retained after its run is deleted so that billing
 /// and cost dashboards stay correct — hence the nullable `runId`.
@@ -289,7 +333,7 @@ model UsageRecord {
 
   /// Cost in micro-cents (1e-8 USD). BigInt because a monthly rollup overflows
   /// a 32-bit integer long before it overflows a plausible invoice.
-  costMicroCents BigInt @default(0)
+  costMicroCents BigInt  @default(0)
   /// The `ModelPrice` row this cost was derived from. Null means the model had
   /// no known price — the signal an unpriced model has appeared in production.
   priceId        String?
@@ -328,4 +372,109 @@ model ModelPrice {
 
   @@unique([provider, model, effectiveFrom])
   @@index([model, effectiveFrom])
+}
+
+/**
+ * ------------------------------------------------- credentials and audit
+ */
+
+/// A long-lived credential for a non-interactive caller: CI, the SDK, a script.
+///
+/// Humans at a terminal authenticate through Clerk's OAuth + PKCE flow instead
+/// and never hold one of these. The row stores a *prefix* and a SHA-256 of the
+/// secret, so a dump of this table authenticates nobody — see `apikey.ts` in
+/// @sce/shared for why a fast hash is the right choice for a 256-bit random
+/// secret and the wrong one for anything a human picked.
+model ApiKey {
+  id              String  @id @default(cuid())
+  tenantId        String
+  /// The person who minted it, kept so a departing employee's keys are findable.
+  /// Null for a key created by the bootstrap script, which has no principal.
+  createdByUserId String?
+
+  /// Human label. A key nobody can identify is a key nobody dares revoke.
+  name String
+
+  /// `sce_live_a1b2c3d4e5f6` — the public half. Unique because it is the lookup
+  /// key: verification is one indexed read plus one constant-time compare, not
+  /// a scan over every key in the table.
+  prefix String @unique
+  /// SHA-256 of the secret half, hex. The secret itself is never stored.
+  hash   String
+
+  /// Scopes from `scopeSchema` in @sce/shared. A `String[]` rather than an enum
+  /// array because the values contain colons, which Postgres enum labels cannot.
+  /// Parsed by `storedScopesSchema` on the way out — an unreadable entry is
+  /// dropped, which fails closed.
+  scopes String[]
+
+  /// Set on use, not on every request: the write is best-effort and throttled,
+  /// because an exact timestamp is not worth a row update per API call.
+  lastUsedAt DateTime?
+  /// Null means the key does not expire.
+  expiresAt  DateTime?
+  /// Revocation is a timestamp, not a delete: the row has to outlive the key so
+  /// the audit trail still resolves which credential did what.
+  revokedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation("ApiKeyCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([createdByUserId])
+}
+
+/// Append-only record of anything worth answering "who did that?" about.
+///
+/// No `updatedAt`, and nothing in the application updates or deletes a row:
+/// an audit log that can be edited by the system it audits is decoration. The
+/// tenant is nullable so an authentication failure — which by definition has no
+/// resolved tenant yet — is still recorded rather than silently dropped.
+model AuditEvent {
+  id       String  @id @default(cuid())
+  tenantId String?
+
+  action    AuditAction
+  actorType ActorType
+  /// User id, ApiKey id, or null for SYSTEM.
+  actorId   String?
+
+  /// What was acted on — "run", "api_key", "membership" — and which one.
+  resourceType String?
+  resourceId   String?
+
+  /// Request provenance. Both are attacker-controlled strings; they are stored
+  /// for correlation, never trusted for a decision.
+  ip        String?
+  userAgent String?
+
+  /// Anything action-specific: the role before and after a change, the reason a
+  /// run was canceled, the scopes a key was granted.
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+}
+
+/// Webhook deliveries already processed, keyed by the Svix message id.
+///
+/// Svix retries on failure, and a retry of `organizationMembership.updated`
+/// that ran once already must not run twice. The id is the primary key, so the
+/// dedupe is an insert that either succeeds or conflicts — no read-then-write
+/// race between two API replicas receiving the same retry.
+model WebhookDelivery {
+  /// The `svix-id` header. Supplied, not generated: that is the point.
+  id         String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
 }

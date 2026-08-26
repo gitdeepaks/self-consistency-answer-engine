@@ -9,6 +9,7 @@ import type { StreamedEvent } from "./api.ts"
 
 const COMPLETED_RUN: Run = {
   id: "run_1",
+  createdByUserId: "user_1",
   prompt: "Why is the sky blue?",
   status: "COMPLETE",
   error: null,
