@@ -1,4 +1,4 @@
-import { z } from "zod"
+import { z } from "zod";
 
 /**
  * Queue job payloads.
@@ -21,16 +21,16 @@ export const candidateJobSchema = z.object({
   tenantId: z.string().min(1),
   runId: z.string().min(1),
   candidateId: z.string().min(1),
-})
-export type CandidateJob = z.infer<typeof candidateJobSchema>
+});
+export type CandidateJob = z.infer<typeof candidateJobSchema>;
 
 /** Compare the settled candidates and write the final answer. One per run. */
 export const synthesisJobSchema = z.object({
   tenantId: z.string().min(1),
   runId: z.string().min(1),
-})
-export type SynthesisJob = z.infer<typeof synthesisJobSchema>
+});
+export type SynthesisJob = z.infer<typeof synthesisJobSchema>;
 
 /** Job names, used for logs, metrics and the BullMQ dashboard. */
-export const CANDIDATE_JOB_NAME = "candidate"
-export const SYNTHESIS_JOB_NAME = "synthesis"
+export const CANDIDATE_JOB_NAME = "candidate";
+export const SYNTHESIS_JOB_NAME = "synthesis";

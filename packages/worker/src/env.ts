@@ -1,8 +1,8 @@
-import { loadRootEnv } from "@sce/shared"
-import { z } from "zod"
+import { loadRootEnv } from "@sce/shared";
+import { z } from "zod";
 
 // Must run before anything below reads process.env.
-loadRootEnv()
+loadRootEnv();
 
 /**
  * Worker configuration, parsed once at boot.
@@ -13,8 +13,11 @@ loadRootEnv()
  * here is validated instead, and a bad one names itself and stops the process.
  */
 
-const positiveInt = z.coerce.number().int().positive()
-const durationMs = positiveInt.max(60 * 60_000, "duration must be under an hour")
+const positiveInt = z.coerce.number().int().positive();
+const durationMs = positiveInt.max(
+  60 * 60_000,
+  "duration must be under an hour",
+);
 
 const workerEnvSchema = z
   .object({
@@ -41,8 +44,16 @@ const workerEnvSchema = z
      * Zero disables the ceiling. Cost is in micro-cents (1e-8 USD), matching
      * `UsageRecord.costMicroCents`, so the check is exact integer arithmetic.
      */
-    RUN_MAX_TOTAL_TOKENS: z.coerce.number().int().nonnegative().default(400_000),
-    RUN_MAX_COST_MICRO_CENTS: z.coerce.number().int().nonnegative().default(50 * 1_000_000),
+    RUN_MAX_TOTAL_TOKENS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(400_000),
+    RUN_MAX_COST_MICRO_CENTS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(50 * 1_000_000),
 
     /** Concurrent in-flight calls allowed against one provider, per worker. */
     PROVIDER_MAX_CONCURRENCY: positiveInt.max(64).default(4),
@@ -62,7 +73,12 @@ const workerEnvSchema = z
     CANDIDATE_DELTA_FLUSH_CHARS: positiveInt.max(64_000).default(256),
 
     /** How often the deadline reaper sweeps for abandoned runs. 0 disables it. */
-    REAPER_INTERVAL_MS: z.coerce.number().int().nonnegative().max(60 * 60_000).default(30_000),
+    REAPER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .max(60 * 60_000)
+      .default(30_000),
 
     /** How long a SIGTERM waits for in-flight jobs before forcing the exit. */
     SHUTDOWN_TIMEOUT_MS: durationMs.default(30_000),
@@ -76,20 +92,22 @@ const workerEnvSchema = z
   .refine((env) => env.PER_MODEL_TIMEOUT_MS <= env.RUN_DEADLINE_MS, {
     message: "PER_MODEL_TIMEOUT_MS must not exceed RUN_DEADLINE_MS",
     path: ["PER_MODEL_TIMEOUT_MS"],
-  })
+  });
 
-export type WorkerEnv = z.infer<typeof workerEnvSchema>
+export type WorkerEnv = z.infer<typeof workerEnvSchema>;
 
-function parseEnv(source: Readonly<Record<string, string | undefined>>): WorkerEnv {
-  const parsed = workerEnvSchema.safeParse(source)
-  if (parsed.success) return parsed.data
+function parseEnv(
+  source: Readonly<Record<string, string | undefined>>,
+): WorkerEnv {
+  const parsed = workerEnvSchema.safeParse(source);
+  if (parsed.success) return parsed.data;
 
   const report = parsed.error.issues
     .map((issue) => `  ${issue.path.join(".") || "(root)"}: ${issue.message}`)
-    .join("\n")
-  throw new Error(`Invalid worker configuration:\n${report}`)
+    .join("\n");
+  throw new Error(`Invalid worker configuration:\n${report}`);
 }
 
-export const workerConfig: WorkerEnv = parseEnv(process.env)
+export const workerConfig: WorkerEnv = parseEnv(process.env);
 
-export { parseEnv as parseWorkerEnv }
+export { parseEnv as parseWorkerEnv };

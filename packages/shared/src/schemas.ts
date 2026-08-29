@@ -1,7 +1,7 @@
-import { z } from "zod"
-import { PROVIDER_IDS } from "./models.ts"
+import { z } from "zod";
+import { PROVIDER_IDS } from "./models.ts";
 
-export const providerIdSchema = z.enum(PROVIDER_IDS)
+export const providerIdSchema = z.enum(PROVIDER_IDS);
 
 /**
  * Lifecycle of a run.
@@ -19,14 +19,18 @@ export const runStatusSchema = z.enum([
   "COMPLETE",
   "FAILED",
   "CANCELED",
-])
-export type RunStatus = z.infer<typeof runStatusSchema>
+]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
 
 /** Statuses after which a run produces no further events. */
-export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ["COMPLETE", "FAILED", "CANCELED"]
+export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
+  "COMPLETE",
+  "FAILED",
+  "CANCELED",
+];
 
 export function isTerminalRunStatus(status: RunStatus): boolean {
-  return TERMINAL_RUN_STATUSES.includes(status)
+  return TERMINAL_RUN_STATUSES.includes(status);
 }
 
 export const candidateStatusSchema = z.enum([
@@ -36,8 +40,8 @@ export const candidateStatusSchema = z.enum([
   "ERROR",
   "SKIPPED",
   "CANCELED",
-])
-export type CandidateStatus = z.infer<typeof candidateStatusSchema>
+]);
+export type CandidateStatus = z.infer<typeof candidateStatusSchema>;
 
 /** ---------------------------------------------------------------- input */
 
@@ -50,8 +54,8 @@ export const askInputSchema = z.object({
   /** Optional subset of the panel; defaults to every configured provider. */
   providers: z.array(providerIdSchema).min(1).optional(),
   temperature: z.number().min(0).max(2).optional(),
-})
-export type AskInput = z.infer<typeof askInputSchema>
+});
+export type AskInput = z.infer<typeof askInputSchema>;
 
 /**
  * `Idempotency-Key` request header.
@@ -66,17 +70,20 @@ export const idempotencyKeySchema = z
   .trim()
   .min(8, "Idempotency-Key must be at least 8 characters")
   .max(255, "Idempotency-Key must be at most 255 characters")
-  .regex(/^[A-Za-z0-9_.:-]+$/, "Idempotency-Key may only contain A-Z a-z 0-9 _ . : -")
+  .regex(
+    /^[A-Za-z0-9_.:-]+$/,
+    "Idempotency-Key may only contain A-Z a-z 0-9 _ . : -",
+  );
 
 export const runHeadersSchema = z.object({
   "idempotency-key": idempotencyKeySchema.optional(),
-})
+});
 
 /** Reason recorded when a caller cancels a run. */
 export const cancelRunInputSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
-})
-export type CancelRunInput = z.infer<typeof cancelRunInputSchema>
+});
+export type CancelRunInput = z.infer<typeof cancelRunInputSchema>;
 
 /**
  * SSE resume cursor.
@@ -85,35 +92,49 @@ export type CancelRunInput = z.infer<typeof cancelRunInputSchema>
  * automatically; other clients pass `?afterSeq=`. Both land here, and both are
  * parsed rather than trusted — the value ends up in a database predicate.
  */
-export const eventCursorSchema = z.coerce.number().int().nonnegative().catch(0)
+export const eventCursorSchema = z.coerce.number().int().nonnegative().catch(0);
 
 /** `?afterSeq=` on the SSE route, for clients that are not `EventSource`. */
 export const eventStreamQuerySchema = z.object({
   afterSeq: eventCursorSchema.optional(),
-})
+});
 
 export const listQueriesInputSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
-})
+});
 
 /** ------------------------------------------------------------ evaluator */
 
 export const candidateReviewSchema = z.object({
   provider: providerIdSchema,
-  score: z.number().min(0).max(10).describe("Overall quality of this answer, 0-10."),
-  strengths: z.array(z.string()).describe("What this answer got right that others missed."),
-  weaknesses: z.array(z.string()).describe("Errors, omissions or weak reasoning."),
-})
+  score: z
+    .number()
+    .min(0)
+    .max(10)
+    .describe("Overall quality of this answer, 0-10."),
+  strengths: z
+    .array(z.string())
+    .describe("What this answer got right that others missed."),
+  weaknesses: z
+    .array(z.string())
+    .describe("Errors, omissions or weak reasoning."),
+});
 
 export const synthesisOutputSchema = z.object({
   agreements: z
     .array(z.string())
-    .describe("Claims the models independently converged on (high confidence)."),
+    .describe(
+      "Claims the models independently converged on (high confidence).",
+    ),
   disagreements: z
     .array(z.string())
-    .describe("Points where the models conflicted, and which reading is correct."),
-  reviews: z.array(candidateReviewSchema).describe("One review per candidate answer."),
+    .describe(
+      "Points where the models conflicted, and which reading is correct.",
+    ),
+  reviews: z
+    .array(candidateReviewSchema)
+    .describe("One review per candidate answer."),
   finalAnswer: z
     .string()
     .describe(
@@ -124,17 +145,17 @@ export const synthesisOutputSchema = z.object({
     .min(0)
     .max(1)
     .describe("How confident the evaluator is in the final answer, 0-1."),
-})
-export type SynthesisOutput = z.infer<typeof synthesisOutputSchema>
-export type CandidateReview = z.infer<typeof candidateReviewSchema>
+});
+export type SynthesisOutput = z.infer<typeof synthesisOutputSchema>;
+export type CandidateReview = z.infer<typeof candidateReviewSchema>;
 
 /** ------------------------------------------------------------- entities */
 
 export const usageSchema = z.object({
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
-})
-export type Usage = z.infer<typeof usageSchema>
+});
+export type Usage = z.infer<typeof usageSchema>;
 
 export const candidateSchema = z.object({
   id: z.string(),
@@ -149,8 +170,8 @@ export const candidateSchema = z.object({
   outputTokens: z.number().nullable(),
   /** Queue delivery attempts spent so far. Zero until a worker picks it up. */
   attempts: z.number().int().nonnegative(),
-})
-export type Candidate = z.infer<typeof candidateSchema>
+});
+export type Candidate = z.infer<typeof candidateSchema>;
 
 export const synthesisSchema = z.object({
   id: z.string(),
@@ -163,8 +184,8 @@ export const synthesisSchema = z.object({
   latencyMs: z.number().nullable(),
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
-})
-export type Synthesis = z.infer<typeof synthesisSchema>
+});
+export type Synthesis = z.infer<typeof synthesisSchema>;
 
 export const runSchema = z.object({
   id: z.string(),
@@ -187,14 +208,16 @@ export const runSchema = z.object({
   canceledAt: z.string().nullable(),
   candidates: z.array(candidateSchema),
   synthesis: synthesisSchema.nullable(),
-})
-export type Run = z.infer<typeof runSchema>
+});
+export type Run = z.infer<typeof runSchema>;
 
-export const runSummarySchema = runSchema.omit({ candidates: true, synthesis: true }).extend({
-  candidateCount: z.number(),
-  hasSynthesis: z.boolean(),
-})
-export type RunSummary = z.infer<typeof runSummarySchema>
+export const runSummarySchema = runSchema
+  .omit({ candidates: true, synthesis: true })
+  .extend({
+    candidateCount: z.number(),
+    hasSynthesis: z.boolean(),
+  });
+export type RunSummary = z.infer<typeof runSummarySchema>;
 
 export const providerHealthSchema = z.object({
   id: providerIdSchema,
@@ -205,29 +228,29 @@ export const providerHealthSchema = z.object({
   /** "direct" = own API key, "gateway" = routed via AI Gateway, null = unusable. */
   route: z.enum(["direct", "gateway"]).nullable(),
   hint: z.string().nullable(),
-})
-export type ProviderHealth = z.infer<typeof providerHealthSchema>
+});
+export type ProviderHealth = z.infer<typeof providerHealthSchema>;
 
 /** ------------------------------------------------------------- tenancy */
 
-export const memberRoleSchema = z.enum(["owner", "admin", "member", "viewer"])
-export type MemberRole = z.infer<typeof memberRoleSchema>
+export const memberRoleSchema = z.enum(["owner", "admin", "member", "viewer"]);
+export type MemberRole = z.infer<typeof memberRoleSchema>;
 
 export const tenantSchema = z.object({
   id: z.string(),
   slug: z.string(),
   name: z.string(),
   createdAt: z.string(),
-})
-export type Tenant = z.infer<typeof tenantSchema>
+});
+export type Tenant = z.infer<typeof tenantSchema>;
 
 export const userSchema = z.object({
   id: z.string(),
   email: z.string(),
   displayName: z.string().nullable(),
   createdAt: z.string(),
-})
-export type User = z.infer<typeof userSchema>
+});
+export type User = z.infer<typeof userSchema>;
 
 export const membershipSchema = z.object({
   id: z.string(),
@@ -235,14 +258,14 @@ export const membershipSchema = z.object({
   userId: z.string(),
   role: memberRoleSchema,
   createdAt: z.string(),
-})
-export type Membership = z.infer<typeof membershipSchema>
+});
+export type Membership = z.infer<typeof membershipSchema>;
 
 /** --------------------------------------------------------------- usage */
 
 /** Which leg of a run a metered call belongs to. */
-export const usageKindSchema = z.enum(["CANDIDATE", "EVALUATOR"])
-export type UsageKind = z.infer<typeof usageKindSchema>
+export const usageKindSchema = z.enum(["CANDIDATE", "EVALUATOR"]);
+export type UsageKind = z.infer<typeof usageKindSchema>;
 
 export const usageRecordSchema = z.object({
   id: z.string(),
@@ -257,8 +280,8 @@ export const usageRecordSchema = z.object({
   /** Null when no price was found — the "unpriced model" signal. */
   priceId: z.string().nullable(),
   createdAt: z.string(),
-})
-export type UsageRecord = z.infer<typeof usageRecordSchema>
+});
+export type UsageRecord = z.infer<typeof usageRecordSchema>;
 
 export const usageTotalsSchema = z.object({
   runs: z.number(),
@@ -270,5 +293,5 @@ export const usageTotalsSchema = z.object({
   hasUnpricedCalls: z.boolean(),
   /** True when at least one call was priced from an unverified placeholder. */
   hasUnverifiedPricing: z.boolean(),
-})
-export type UsageTotals = z.infer<typeof usageTotalsSchema>
+});
+export type UsageTotals = z.infer<typeof usageTotalsSchema>;

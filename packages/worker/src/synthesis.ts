@@ -6,8 +6,8 @@ import {
   recordUsage,
   saveSynthesis,
   setRunStatus,
-} from "@sce/db"
-import type { JobMeta } from "@sce/queue"
+} from "@sce/db";
+import type { JobMeta } from "@sce/queue";
 import {
   assertNever,
   describeError,
@@ -17,8 +17,8 @@ import {
   type CandidateReview,
   type Run,
   type SynthesisJob,
-} from "@sce/shared"
-import { Output, generateText } from "ai"
+} from "@sce/shared";
+import { Output, generateText } from "ai";
 import {
   anySignal,
   cancellationSignal,
@@ -26,11 +26,11 @@ import {
   contextFor,
   timeoutSignal,
   type RunContext,
-} from "./context.ts"
-import { workerConfig } from "./env.ts"
-import { EVALUATOR_SYSTEM_PROMPT, buildEvaluatorPrompt } from "./prompts.ts"
-import { resolveEvaluator } from "./providers.ts"
-import { classify, recordProviderOutcome, withBulkhead } from "./resilience.ts"
+} from "./context.ts";
+import { workerConfig } from "./env.ts";
+import { EVALUATOR_SYSTEM_PROMPT, buildEvaluatorPrompt } from "./prompts.ts";
+import { resolveEvaluator } from "./providers.ts";
+import { classify, recordProviderOutcome, withBulkhead } from "./resilience.ts";
 
 /**
  * Compare the candidates and write the final answer.
@@ -41,78 +41,92 @@ import { classify, recordProviderOutcome, withBulkhead } from "./resilience.ts"
  * resumable — a synthesis retried an hour after a worker crash sees exactly the
  * candidates that exist now, not a snapshot of what existed then.
  */
-export async function processSynthesisJob(job: SynthesisJob, meta: JobMeta): Promise<void> {
-  const { tenantId, runId } = job
-  const ctx = contextFor(tenantId, runId)
+export async function processSynthesisJob(
+  job: SynthesisJob,
+  meta: JobMeta,
+): Promise<void> {
+  const { tenantId, runId } = job;
+  const ctx = contextFor(tenantId, runId);
 
-  const run = await getRun(tenantId, runId)
-  if (!run) return
+  const run = await getRun(tenantId, runId);
+  if (!run) return;
   // A redelivery after the run already concluded must not rewrite its outcome.
-  if (isTerminalRunStatus(run.status)) return
+  if (isTerminalRunStatus(run.status)) return;
 
-  const stop = await checkStop(tenantId, runId)
+  const stop = await checkStop(tenantId, runId);
   if (stop) {
     switch (stop.kind) {
       case "canceled":
-        await cancelPendingCandidates(tenantId, runId, stop.message)
-        await ctx.emit({ type: "run.canceled", runId, reason: stop.message })
-        return
+        await cancelPendingCandidates(tenantId, runId, stop.message);
+        await ctx.emit({ type: "run.canceled", runId, reason: stop.message });
+        return;
       case "deadline":
       case "budget":
-        await concludeFailed(ctx, stop.message)
-        return
+        await concludeFailed(ctx, stop.message);
+        return;
       case "finished":
       case "missing":
-        return
+        return;
       default:
-        return assertNever(stop, "processSynthesisJob")
+        return assertNever(stop, "processSynthesisJob");
     }
   }
 
-  const succeeded = run.candidates.filter((candidate) => candidate.status === "OK")
+  const succeeded = run.candidates.filter(
+    (candidate) => candidate.status === "OK",
+  );
   if (succeeded.length === 0) {
-    await concludeFailed(ctx, `Every model in the panel failed — ${reasons(run.candidates)}`)
-    return
+    await concludeFailed(
+      ctx,
+      `Every model in the panel failed — ${reasons(run.candidates)}`,
+    );
+    return;
   }
 
-  await setRunStatus(tenantId, runId, "SYNTHESIZING")
-  await ctx.emit({ type: "run.status", runId, status: "SYNTHESIZING" })
+  await setRunStatus(tenantId, runId, "SYNTHESIZING");
+  await ctx.emit({ type: "run.status", runId, status: "SYNTHESIZING" });
 
   try {
-    const synthesis = await synthesize(ctx, meta, run, succeeded)
-    await ctx.emit({ type: "synthesis.settled", runId, synthesis })
+    const synthesis = await synthesize(ctx, meta, run, succeeded);
+    await ctx.emit({ type: "synthesis.settled", runId, synthesis });
 
-    const totalLatencyMs = Date.now() - new Date(run.createdAt).getTime()
-    await completeRun(tenantId, runId, totalLatencyMs)
-    await ctx.emit({ type: "run.completed", runId, totalLatencyMs })
+    const totalLatencyMs = Date.now() - new Date(run.createdAt).getTime();
+    await completeRun(tenantId, runId, totalLatencyMs);
+    await ctx.emit({ type: "run.completed", runId, totalLatencyMs });
   } catch (error) {
-    if (error instanceof RetrySynthesis) throw error.cause
-    await concludeFailed(ctx, describeError(error))
+    if (error instanceof RetrySynthesis) throw error.cause;
+    await concludeFailed(ctx, describeError(error));
   }
 }
 
 /** Thrown to hand a retryable evaluator failure back to the queue's backoff. */
 class RetrySynthesis extends Error {
-  override readonly cause: unknown
+  override readonly cause: unknown;
 
   constructor(cause: unknown) {
-    super("synthesis is retryable")
-    this.name = "RetrySynthesis"
-    this.cause = cause
+    super("synthesis is retryable");
+    this.name = "RetrySynthesis";
+    this.cause = cause;
   }
 }
 
 function reasons(candidates: readonly Candidate[]): string {
   return candidates
-    .map((candidate) => `${candidate.label}: ${candidate.error ?? "unknown error"}`)
-    .join(" | ")
+    .map(
+      (candidate) =>
+        `${candidate.label}: ${candidate.error ?? "unknown error"}`,
+    )
+    .join(" | ");
 }
 
 async function concludeFailed(ctx: RunContext, message: string): Promise<void> {
   await failRun(ctx.tenantId, ctx.runId, message).catch((error: unknown) => {
-    console.error("[worker] failed to mark run failed", { runId: ctx.runId, error })
-  })
-  await ctx.emit({ type: "run.failed", runId: ctx.runId, error: message })
+    console.error("[worker] failed to mark run failed", {
+      runId: ctx.runId,
+      error,
+    });
+  });
+  await ctx.emit({ type: "run.failed", runId: ctx.runId, error: message });
 }
 
 /* ------------------------------------------------------------ the evaluator */
@@ -123,21 +137,29 @@ async function synthesize(
   run: Run,
   candidates: readonly Candidate[],
 ): ReturnType<typeof saveSynthesis> {
-  const evaluator = resolveEvaluator()
+  const evaluator = resolveEvaluator();
   if (!evaluator.model) {
     throw new Error(
-      evaluator.hint ?? "No evaluator model is configured; cannot synthesise a final answer.",
-    )
+      evaluator.hint ??
+        "No evaluator model is configured; cannot synthesise a final answer.",
+    );
   }
-  const model = evaluator.model
+  const model = evaluator.model;
 
-  await ctx.emit({ type: "synthesis.started", runId: ctx.runId, model: evaluator.modelId })
+  await ctx.emit({
+    type: "synthesis.started",
+    runId: ctx.runId,
+    model: evaluator.modelId,
+  });
 
-  const startedAt = performance.now()
-  const timeout = timeoutSignal(workerConfig.EVALUATOR_TIMEOUT_MS, "Evaluator call")
-  const cancellation = await cancellationSignal(ctx.tenantId, ctx.runId)
-  const combined = anySignal([timeout.signal, cancellation.signal])
-  const outputTokenCap = workerConfig.MAX_OUTPUT_TOKENS * 2
+  const startedAt = performance.now();
+  const timeout = timeoutSignal(
+    workerConfig.EVALUATOR_TIMEOUT_MS,
+    "Evaluator call",
+  );
+  const cancellation = await cancellationSignal(ctx.tenantId, ctx.runId);
+  const combined = anySignal([timeout.signal, cancellation.signal]);
+  const outputTokenCap = workerConfig.MAX_OUTPUT_TOKENS * 2;
 
   try {
     const result = await withBulkhead(evaluator.spec.id, () =>
@@ -150,7 +172,7 @@ async function synthesize(
         maxRetries: workerConfig.MAX_RETRIES,
         abortSignal: combined.signal,
       }),
-    )
+    );
 
     // Structured output is only parsed on a clean stop. Hitting the token cap
     // yields a truncated JSON object, which surfaces as an unhelpful
@@ -159,14 +181,15 @@ async function synthesize(
       throw new Error(
         `Evaluator hit the ${outputTokenCap} output-token cap before finishing. ` +
           "Raise MAX_OUTPUT_TOKENS or ask a narrower question.",
-      )
+      );
     }
 
-    const { output, usage } = result
-    const finalAnswer = output.finalAnswer.trim()
-    if (finalAnswer.length === 0) throw new Error("Evaluator returned an empty final answer")
+    const { output, usage } = result;
+    const finalAnswer = output.finalAnswer.trim();
+    if (finalAnswer.length === 0)
+      throw new Error("Evaluator returned an empty final answer");
 
-    await recordProviderOutcome(evaluator.spec.id, { ok: true })
+    await recordProviderOutcome(evaluator.spec.id, { ok: true });
 
     const synthesis = await saveSynthesis(ctx.tenantId, ctx.runId, {
       model: evaluator.modelId,
@@ -178,15 +201,15 @@ async function synthesize(
       latencyMs: Math.round(performance.now() - startedAt),
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
-    })
+    });
 
-    await meterEvaluator(ctx, evaluator.spec.id, evaluator.modelId, usage)
-    return synthesis
+    await meterEvaluator(ctx, evaluator.spec.id, evaluator.modelId, usage);
+    return synthesis;
   } catch (error) {
-    await recordProviderOutcome(evaluator.spec.id, { ok: false, error })
+    await recordProviderOutcome(evaluator.spec.id, { ok: false, error });
 
     if (cancellation.signal.aborted) {
-      throw new Error("Synthesis canceled by request")
+      throw new Error("Synthesis canceled by request");
     }
     // A retryable evaluator failure is worth another attempt: unlike the
     // fan-out, there is no partial result to preserve and no second evaluator
@@ -196,17 +219,17 @@ async function synthesize(
       !meta.isFinalAttempt &&
       classify(error).kind === "retryable"
     ) {
-      throw new RetrySynthesis(error)
+      throw new RetrySynthesis(error);
     }
 
     const reason = timeout.signal.aborted
       ? `Evaluator call exceeded its ${Math.round(workerConfig.EVALUATOR_TIMEOUT_MS / 1000)}s budget`
-      : describeError(error)
-    throw new Error(`Synthesis failed — ${reason}`)
+      : describeError(error);
+    throw new Error(`Synthesis failed — ${reason}`);
   } finally {
-    timeout.clear()
-    combined.clear()
-    await cancellation.clear()
+    timeout.clear();
+    combined.clear();
+    await cancellation.clear();
   }
 }
 
@@ -215,23 +238,30 @@ function normaliseReviews(
   reviews: readonly CandidateReview[],
   candidates: readonly Candidate[],
 ): CandidateReview[] {
-  const byProvider = new Map(reviews.map((review) => [review.provider, review]))
+  const byProvider = new Map(
+    reviews.map((review) => [review.provider, review]),
+  );
   return candidates.map(
     (candidate) =>
       byProvider.get(candidate.provider) ?? {
         provider: candidate.provider,
         score: 0,
         strengths: [],
-        weaknesses: ["The evaluator did not return a review for this candidate."],
+        weaknesses: [
+          "The evaluator did not return a review for this candidate.",
+        ],
       },
-  )
+  );
 }
 
 async function meterEvaluator(
   ctx: RunContext,
   provider: Parameters<typeof recordUsage>[0]["provider"],
   model: string,
-  usage: { inputTokens?: number | undefined; outputTokens?: number | undefined },
+  usage: {
+    inputTokens?: number | undefined;
+    outputTokens?: number | undefined;
+  },
 ): Promise<void> {
   try {
     await recordUsage({
@@ -242,12 +272,12 @@ async function meterEvaluator(
       model,
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
-    })
+    });
   } catch (error) {
     console.error("[worker] failed to record evaluator usage", {
       runId: ctx.runId,
       model,
       error: describeError(error),
-    })
+    });
   }
 }

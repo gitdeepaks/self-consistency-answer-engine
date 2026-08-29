@@ -1,6 +1,6 @@
-import type { RunJobHandlers } from "@sce/queue"
-import { processCandidateJob } from "./candidate.ts"
-import { processSynthesisJob } from "./synthesis.ts"
+import type { RunJobHandlers } from "@sce/queue";
+import { processCandidateJob } from "./candidate.ts";
+import { processSynthesisJob } from "./synthesis.ts";
 
 /**
  * The two processors, as one object.
@@ -14,6 +14,6 @@ import { processSynthesisJob } from "./synthesis.ts"
 export const runJobHandlers: RunJobHandlers = {
   candidate: processCandidateJob,
   synthesis: processSynthesisJob,
-}
+};
 
-export { processCandidateJob, processSynthesisJob }
+export { processCandidateJob, processSynthesisJob };

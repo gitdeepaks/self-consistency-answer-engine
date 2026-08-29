@@ -1,4 +1,4 @@
-import { z } from "zod"
+import { z } from "zod";
 
 /**
  * A JSON value, and the parser that produces one.
@@ -10,7 +10,13 @@ import { z } from "zod"
  * direction, everything passes through this parser — which is also the only
  * thing that actually proves a value survives a round trip through JSON.
  */
-export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   z.union([
@@ -21,7 +27,7 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
     z.array(jsonValueSchema),
     z.record(z.string(), jsonValueSchema),
   ]),
-)
+);
 
 /**
  * A JSON value that can be *written* to a `Json` column.
@@ -35,10 +41,10 @@ export const jsonWritableSchema = z.union([
   z.boolean(),
   z.array(jsonValueSchema),
   z.record(z.string(), jsonValueSchema),
-])
-export type JsonWritable = z.infer<typeof jsonWritableSchema>
+]);
+export type JsonWritable = z.infer<typeof jsonWritableSchema>;
 
 /** Validate that a domain value is representable as JSON, and type it as such. */
 export function toJson(value: unknown): JsonWritable {
-  return jsonWritableSchema.parse(value)
+  return jsonWritableSchema.parse(value);
 }

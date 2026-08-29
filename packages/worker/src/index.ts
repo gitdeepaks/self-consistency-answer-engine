@@ -1,4 +1,4 @@
-import { disconnect } from "@sce/db"
+import { disconnect } from "@sce/db";
 import {
   closeRedis,
   createCandidateWorker,
@@ -6,18 +6,26 @@ import {
   pingRedis,
   queueConfig,
   setLocalRunJobHandlers,
-} from "@sce/queue"
-import { describeError } from "@sce/shared"
-import { workerConfig } from "./env.ts"
-import { runJobHandlers } from "./handlers.ts"
-import { resolveEvaluator, resolvePanel } from "./providers.ts"
-import { startReaper, type Reaper } from "./reaper.ts"
-import { MemoryBreakerStore, setBreakerStore } from "./resilience.ts"
+} from "@sce/queue";
+import { describeError } from "@sce/shared";
+import { workerConfig } from "./env.ts";
+import { runJobHandlers } from "./handlers.ts";
+import { resolveEvaluator, resolvePanel } from "./providers.ts";
+import { startReaper, type Reaper } from "./reaper.ts";
+import { MemoryBreakerStore, setBreakerStore } from "./resilience.ts";
 
-export { runJobHandlers, processCandidateJob, processSynthesisJob } from "./handlers.ts"
-export { resolveEvaluator, resolvePanel, resolveProvider } from "./providers.ts"
-export { reapOnce, startReaper } from "./reaper.ts"
-export { workerConfig } from "./env.ts"
+export {
+  runJobHandlers,
+  processCandidateJob,
+  processSynthesisJob,
+} from "./handlers.ts";
+export {
+  resolveEvaluator,
+  resolvePanel,
+  resolveProvider,
+} from "./providers.ts";
+export { reapOnce, startReaper } from "./reaper.ts";
+export { workerConfig } from "./env.ts";
 
 /**
  * The worker process.
@@ -29,7 +37,7 @@ export { workerConfig } from "./env.ts"
 
 export interface WorkerHandle {
   /** Drain in-flight jobs and release every connection. Idempotent. */
-  shutdown(): Promise<void>
+  shutdown(): Promise<void>;
 }
 
 /**
@@ -43,22 +51,22 @@ export interface WorkerHandle {
  */
 export async function startWorker(): Promise<WorkerHandle> {
   if (queueConfig.RUN_TRANSPORT === "local") {
-    setLocalRunJobHandlers(runJobHandlers)
+    setLocalRunJobHandlers(runJobHandlers);
     // A fleet-wide breaker needs Redis; without it, per-process state is the
     // honest option rather than a Redis call that cannot succeed.
-    setBreakerStore(new MemoryBreakerStore())
+    setBreakerStore(new MemoryBreakerStore());
     console.warn(
       "[worker] RUN_TRANSPORT=local — running in-process. Runs do not survive a restart " +
         "and this process cannot be scaled past one replica.",
-    )
-    const reaper = startReaper()
-    return { shutdown: () => shutdownLocal(reaper) }
+    );
+    const reaper = startReaper();
+    return { shutdown: () => shutdownLocal(reaper) };
   }
 
-  await pingRedis()
+  await pingRedis();
 
-  const candidateWorker = createCandidateWorker(runJobHandlers.candidate)
-  const synthesisWorker = createSynthesisWorker(runJobHandlers.synthesis)
+  const candidateWorker = createCandidateWorker(runJobHandlers.candidate);
+  const synthesisWorker = createSynthesisWorker(runJobHandlers.synthesis);
 
   for (const worker of [candidateWorker, synthesisWorker]) {
     worker.on("failed", (job, error) => {
@@ -67,19 +75,25 @@ export async function startWorker(): Promise<WorkerHandle> {
         jobId: job?.id,
         attemptsMade: job?.attemptsMade,
         error: describeError(error),
-      })
-    })
+      });
+    });
     worker.on("error", (error) => {
-      console.error("[worker] worker error", { queue: worker.name, error: describeError(error) })
-    })
+      console.error("[worker] worker error", {
+        queue: worker.name,
+        error: describeError(error),
+      });
+    });
   }
 
-  await Promise.all([candidateWorker.waitUntilReady(), synthesisWorker.waitUntilReady()])
-  const reaper = startReaper()
+  await Promise.all([
+    candidateWorker.waitUntilReady(),
+    synthesisWorker.waitUntilReady(),
+  ]);
+  const reaper = startReaper();
 
-  announce()
+  announce();
 
-  let shuttingDown: Promise<void> | null = null
+  let shuttingDown: Promise<void> | null = null;
   return {
     shutdown: () => {
       /*
@@ -88,53 +102,55 @@ export async function startWorker(): Promise<WorkerHandle> {
        * first rather than closing a worker that is halfway through closing.
        */
       shuttingDown ??= (async () => {
-        console.log("[worker] draining…")
-        await reaper.stop()
+        console.log("[worker] draining…");
+        await reaper.stop();
         // `close()` stops accepting new jobs and waits for active ones to
         // finish. That wait is the entire reason a rolling deploy does not
         // orphan runs — a killed worker's jobs would be redelivered, but only
         // after their lock expired, with the client watching nothing happen.
-        await Promise.all([candidateWorker.close(), synthesisWorker.close()])
-        await closeRedis()
-        await disconnect()
-        console.log("[worker] drained")
-      })()
-      return shuttingDown
+        await Promise.all([candidateWorker.close(), synthesisWorker.close()]);
+        await closeRedis();
+        await disconnect();
+        console.log("[worker] drained");
+      })();
+      return shuttingDown;
     },
-  }
+  };
 }
 
 async function shutdownLocal(reaper: Reaper): Promise<void> {
-  await reaper.stop()
-  setLocalRunJobHandlers(null)
-  await disconnect()
+  await reaper.stop();
+  setLocalRunJobHandlers(null);
+  await disconnect();
 }
 
 function announce(): void {
-  const panel = resolvePanel()
-  const evaluator = resolveEvaluator()
+  const panel = resolvePanel();
+  const evaluator = resolveEvaluator();
 
-  console.log("Self-Consistency Answer Engine — worker")
+  console.log("Self-Consistency Answer Engine — worker");
   console.log(
     `  transport  ${queueConfig.RUN_TRANSPORT}  concurrency ${queueConfig.QUEUE_CONCURRENCY}  ` +
       `attempts ${queueConfig.QUEUE_MAX_ATTEMPTS}`,
-  )
+  );
   for (const provider of panel) {
-    const state = provider.model ? `ready via ${provider.route}` : "UNAVAILABLE"
+    const state = provider.model
+      ? `ready via ${provider.route}`
+      : "UNAVAILABLE";
     console.log(
       `  panel      ${provider.spec.label.padEnd(8)} ${provider.modelId.padEnd(22)} ${state}`,
-    )
+    );
   }
   console.log(
     `  evaluator  ${evaluator.spec.label.padEnd(8)} ${evaluator.modelId.padEnd(22)} ${
       evaluator.model ? `ready via ${evaluator.route}` : "UNAVAILABLE"
     }`,
-  )
+  );
   console.log(
     `  budgets    run ${Math.round(workerConfig.RUN_DEADLINE_MS / 1000)}s  ` +
       `model ${Math.round(workerConfig.PER_MODEL_TIMEOUT_MS / 1000)}s  ` +
       `tokens ${workerConfig.RUN_MAX_TOTAL_TOKENS || "unlimited"}`,
-  )
+  );
 }
 
 /**
@@ -145,42 +161,44 @@ function announce(): void {
  * its own shutdown sequence instead of inheriting two competing ones.
  */
 export function installShutdownHandlers(handle: WorkerHandle): void {
-  let exiting = false
+  let exiting = false;
 
   const stop = (signal: NodeJS.Signals): void => {
-    if (exiting) return
-    exiting = true
-    console.log(`[worker] ${signal} received`)
+    if (exiting) return;
+    exiting = true;
+    console.log(`[worker] ${signal} received`);
 
     // A drain that hangs must not hold the deploy open for ever; the platform
     // would SIGKILL us anyway, and doing it ourselves at least logs why.
     const guard = setTimeout(() => {
       console.error(
         `[worker] drain exceeded ${workerConfig.SHUTDOWN_TIMEOUT_MS}ms; exiting with work in flight`,
-      )
-      process.exit(1)
-    }, workerConfig.SHUTDOWN_TIMEOUT_MS)
-    guard.unref?.()
+      );
+      process.exit(1);
+    }, workerConfig.SHUTDOWN_TIMEOUT_MS);
+    guard.unref?.();
 
     void handle
       .shutdown()
       .then(() => {
-        clearTimeout(guard)
-        process.exit(0)
+        clearTimeout(guard);
+        process.exit(0);
       })
       .catch((error: unknown) => {
-        console.error("[worker] shutdown failed", { error: describeError(error) })
-        process.exit(1)
-      })
-  }
+        console.error("[worker] shutdown failed", {
+          error: describeError(error),
+        });
+        process.exit(1);
+      });
+  };
 
-  process.on("SIGTERM", () => stop("SIGTERM"))
-  process.on("SIGINT", () => stop("SIGINT"))
+  process.on("SIGTERM", () => stop("SIGTERM"));
+  process.on("SIGINT", () => stop("SIGINT"));
 }
 
 // Only when run as a program, so importing `@sce/worker` for its handlers (the
 // embedded-worker path, and the tests) does not start a second consumer.
 if (import.meta.main) {
-  const handle = await startWorker()
-  installShutdownHandlers(handle)
+  const handle = await startWorker();
+  installShutdownHandlers(handle);
 }

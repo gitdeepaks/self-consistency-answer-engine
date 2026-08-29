@@ -1,7 +1,7 @@
-import { getRunControl, runUsage, type RunControl } from "@sce/db"
-import { cancellationBus, runBus } from "@sce/queue"
-import { isTerminalRunStatus, type RunEvent } from "@sce/shared"
-import { workerConfig } from "./env.ts"
+import { getRunControl, runUsage, type RunControl } from "@sce/db";
+import { cancellationBus, runBus } from "@sce/queue";
+import { isTerminalRunStatus, type RunEvent } from "@sce/shared";
+import { workerConfig } from "./env.ts";
 
 /**
  * The per-job context every step of a run shares.
@@ -16,21 +16,21 @@ import { workerConfig } from "./env.ts"
  */
 
 export interface RunContext {
-  tenantId: string
-  runId: string
+  tenantId: string;
+  runId: string;
   /** Persist (unless ephemeral) and publish one progress event. */
-  emit(event: RunEvent): Promise<void>
+  emit(event: RunEvent): Promise<void>;
 }
 
 export function contextFor(tenantId: string, runId: string): RunContext {
-  const bus = runBus()
+  const bus = runBus();
   return {
     tenantId,
     runId,
     async emit(event: RunEvent): Promise<void> {
-      await bus.publish(tenantId, runId, event)
+      await bus.publish(tenantId, runId, event);
     },
-  }
+  };
 }
 
 /* ------------------------------------------------------------- stop checks */
@@ -41,7 +41,7 @@ export type StopReason =
   | { kind: "deadline"; message: string }
   | { kind: "budget"; message: string }
   | { kind: "finished"; message: string }
-  | { kind: "missing"; message: string }
+  | { kind: "missing"; message: string };
 
 /**
  * Decide whether the next model call may happen.
@@ -56,23 +56,33 @@ export async function checkStop(
   runId: string,
   now: Date = new Date(),
 ): Promise<StopReason | null> {
-  const control = await getRunControl(tenantId, runId)
-  if (!control) return { kind: "missing", message: `Run ${runId} no longer exists` }
+  const control = await getRunControl(tenantId, runId);
+  if (!control)
+    return { kind: "missing", message: `Run ${runId} no longer exists` };
 
   if (control.canceledAt !== null) {
-    return { kind: "canceled", message: control.cancelReason ?? "Run was canceled" }
+    return {
+      kind: "canceled",
+      message: control.cancelReason ?? "Run was canceled",
+    };
   }
   if (isTerminalRunStatus(control.status)) {
-    return { kind: "finished", message: `Run already finished as ${control.status}` }
+    return {
+      kind: "finished",
+      message: `Run already finished as ${control.status}`,
+    };
   }
-  if (control.deadlineAt !== null && control.deadlineAt.getTime() <= now.getTime()) {
+  if (
+    control.deadlineAt !== null &&
+    control.deadlineAt.getTime() <= now.getTime()
+  ) {
     return {
       kind: "deadline",
       message: `Run deadline of ${control.deadlineAt.toISOString()} passed before this step started`,
-    }
+    };
   }
 
-  return checkBudget(tenantId, runId, control)
+  return checkBudget(tenantId, runId, control);
 }
 
 /** The spend half of `checkStop`, split out so tests can drive it directly. */
@@ -81,25 +91,27 @@ export async function checkBudget(
   runId: string,
   control: RunControl,
 ): Promise<StopReason | null> {
-  const tokenCeiling = control.maxTotalTokens ?? workerConfig.RUN_MAX_TOTAL_TOKENS
-  const costCeiling = control.maxCostMicroCents ?? workerConfig.RUN_MAX_COST_MICRO_CENTS
-  if (tokenCeiling === 0 && costCeiling === 0) return null
+  const tokenCeiling =
+    control.maxTotalTokens ?? workerConfig.RUN_MAX_TOTAL_TOKENS;
+  const costCeiling =
+    control.maxCostMicroCents ?? workerConfig.RUN_MAX_COST_MICRO_CENTS;
+  if (tokenCeiling === 0 && costCeiling === 0) return null;
 
-  const spent = await runUsage(tenantId, runId)
+  const spent = await runUsage(tenantId, runId);
 
   if (tokenCeiling > 0 && spent.totalTokens >= tokenCeiling) {
     return {
       kind: "budget",
       message: `Run token ceiling reached (${spent.totalTokens} of ${tokenCeiling})`,
-    }
+    };
   }
   if (costCeiling > 0 && spent.costMicroCents >= costCeiling) {
     return {
       kind: "budget",
       message: `Run cost ceiling reached (${spent.costMicroCents} of ${costCeiling} micro-cents)`,
-    }
+    };
   }
-  return null
+  return null;
 }
 
 /* ---------------------------------------------------------------- signals */
@@ -112,17 +124,22 @@ export async function checkBudget(
  * candidate row. Naming the budget that elapsed is the difference between "the
  * call was aborted" and "the Claude call exceeded its 120s budget".
  */
-export function timeoutSignal(ms: number, what: string): { signal: AbortSignal; clear(): void } {
-  const controller = new AbortController()
+export function timeoutSignal(
+  ms: number,
+  what: string,
+): { signal: AbortSignal; clear(): void } {
+  const controller = new AbortController();
   const timer = setTimeout(() => {
-    controller.abort(new Error(`${what} exceeded ${Math.round(ms / 1000)}s budget`))
-  }, ms)
+    controller.abort(
+      new Error(`${what} exceeded ${Math.round(ms / 1000)}s budget`),
+    );
+  }, ms);
   return {
     signal: controller.signal,
     clear: () => {
-      clearTimeout(timer)
+      clearTimeout(timer);
     },
-  }
+  };
 }
 
 /**
@@ -132,32 +149,32 @@ export function timeoutSignal(ms: number, what: string): { signal: AbortSignal; 
  * runtimes — and the reason is the entire value of the timeout signal above.
  */
 export function anySignal(signals: readonly AbortSignal[]): {
-  signal: AbortSignal
-  clear(): void
+  signal: AbortSignal;
+  clear(): void;
 } {
-  const controller = new AbortController()
-  const listeners: (() => void)[] = []
+  const controller = new AbortController();
+  const listeners: (() => void)[] = [];
 
   for (const signal of signals) {
     if (signal.aborted) {
-      controller.abort(signal.reason)
-      break
+      controller.abort(signal.reason);
+      break;
     }
     const onAbort = (): void => {
-      controller.abort(signal.reason)
-    }
-    signal.addEventListener("abort", onAbort, { once: true })
+      controller.abort(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     listeners.push(() => {
-      signal.removeEventListener("abort", onAbort)
-    })
+      signal.removeEventListener("abort", onAbort);
+    });
   }
 
   return {
     signal: controller.signal,
     clear: () => {
-      for (const remove of listeners) remove()
+      for (const remove of listeners) remove();
     },
-  }
+  };
 }
 
 /**
@@ -172,28 +189,31 @@ export async function cancellationSignal(
   tenantId: string,
   runId: string,
 ): Promise<{ signal: AbortSignal; clear(): Promise<void> }> {
-  const controller = new AbortController()
+  const controller = new AbortController();
   const abort = (reason: string): void => {
-    if (!controller.signal.aborted) controller.abort(new Error(reason))
-  }
+    if (!controller.signal.aborted) controller.abort(new Error(reason));
+  };
 
   const unsubscribe = await cancellationBus().watch(runId, (message) => {
-    abort(message.reason || "Run was canceled")
-  })
+    abort(message.reason || "Run was canceled");
+  });
 
-  const control = await getRunControl(tenantId, runId)
-  if (control?.canceledAt) abort(control.cancelReason ?? "Run was canceled")
+  const control = await getRunControl(tenantId, runId);
+  if (control?.canceledAt) abort(control.cancelReason ?? "Run was canceled");
 
   return {
     signal: controller.signal,
     clear: async () => {
-      unsubscribe()
+      unsubscribe();
     },
-  }
+  };
 }
 
 /** Milliseconds left before the run's deadline, or null when it has none. */
-export function remainingMs(control: RunControl, now: Date = new Date()): number | null {
-  if (control.deadlineAt === null) return null
-  return control.deadlineAt.getTime() - now.getTime()
+export function remainingMs(
+  control: RunControl,
+  now: Date = new Date(),
+): number | null {
+  if (control.deadlineAt === null) return null;
+  return control.deadlineAt.getTime() - now.getTime();
 }

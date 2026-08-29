@@ -1,7 +1,7 @@
-import { errorFacts, type ProviderId } from "@sce/shared"
-import { breakerKey, redis } from "@sce/queue"
-import { z } from "zod"
-import { workerConfig } from "./env.ts"
+import { errorFacts, type ProviderId } from "@sce/shared";
+import { breakerKey, redis } from "@sce/queue";
+import { z } from "zod";
+import { workerConfig } from "./env.ts";
 
 /**
  * Keeping one sick provider from taking the panel down with it.
@@ -24,36 +24,36 @@ import { workerConfig } from "./env.ts"
 
 /** A counting semaphore. Fair: waiters are released in arrival order. */
 class Semaphore {
-  #available: number
-  readonly #waiting: (() => void)[] = []
+  #available: number;
+  readonly #waiting: (() => void)[] = [];
 
   constructor(permits: number) {
-    this.#available = permits
+    this.#available = permits;
   }
 
   async acquire(): Promise<() => void> {
     if (this.#available > 0) {
-      this.#available -= 1
-      return this.#release()
+      this.#available -= 1;
+      return this.#release();
     }
-    await new Promise<void>((resolve) => this.#waiting.push(resolve))
-    return this.#release()
+    await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    return this.#release();
   }
 
   #release(): () => void {
-    let released = false
+    let released = false;
     return () => {
       // Guard against a double release returning a permit that was never held.
-      if (released) return
-      released = true
-      const next = this.#waiting.shift()
-      if (next) next()
-      else this.#available += 1
-    }
+      if (released) return;
+      released = true;
+      const next = this.#waiting.shift();
+      if (next) next();
+      else this.#available += 1;
+    };
   }
 }
 
-const bulkheads = new Map<ProviderId, Semaphore>()
+const bulkheads = new Map<ProviderId, Semaphore>();
 
 /**
  * Run `work` with a permit for this provider held for its duration.
@@ -63,18 +63,21 @@ const bulkheads = new Map<ProviderId, Semaphore>()
  * the hot path to solve a problem the fleet-wide circuit breaker below already
  * covers.
  */
-export async function withBulkhead<T>(provider: ProviderId, work: () => Promise<T>): Promise<T> {
-  let semaphore = bulkheads.get(provider)
+export async function withBulkhead<T>(
+  provider: ProviderId,
+  work: () => Promise<T>,
+): Promise<T> {
+  let semaphore = bulkheads.get(provider);
   if (!semaphore) {
-    semaphore = new Semaphore(workerConfig.PROVIDER_MAX_CONCURRENCY)
-    bulkheads.set(provider, semaphore)
+    semaphore = new Semaphore(workerConfig.PROVIDER_MAX_CONCURRENCY);
+    bulkheads.set(provider, semaphore);
   }
 
-  const release = await semaphore.acquire()
+  const release = await semaphore.acquire();
   try {
-    return await work()
+    return await work();
   } finally {
-    release()
+    release();
   }
 }
 
@@ -83,19 +86,24 @@ export async function withBulkhead<T>(provider: ProviderId, work: () => Promise<
 export type BreakerState =
   | { state: "closed" }
   /** Calls are refused until `until`. */
-  | { state: "open"; until: Date }
+  | { state: "open"; until: Date };
 
 export interface BreakerStore {
   /** Consecutive failure count and open-until timestamp for a provider. */
-  read(provider: ProviderId): Promise<{ failures: number; openUntilMs: number }>
-  recordFailure(provider: ProviderId, thresholdReachedCooldownMs: number): Promise<void>
-  recordSuccess(provider: ProviderId): Promise<void>
+  read(
+    provider: ProviderId,
+  ): Promise<{ failures: number; openUntilMs: number }>;
+  recordFailure(
+    provider: ProviderId,
+    thresholdReachedCooldownMs: number,
+  ): Promise<void>;
+  recordSuccess(provider: ProviderId): Promise<void>;
 }
 
 const breakerRowSchema = z.object({
   failures: z.coerce.number().int().nonnegative().catch(0),
   openUntil: z.coerce.number().int().nonnegative().catch(0),
-})
+});
 
 /**
  * Breaker state in Redis, shared by the whole worker fleet.
@@ -105,67 +113,80 @@ const breakerRowSchema = z.object({
  * ten times the wasted calls and, on a metered API, ten times the wasted spend.
  */
 export class RedisBreakerStore implements BreakerStore {
-  async read(provider: ProviderId): Promise<{ failures: number; openUntilMs: number }> {
-    const raw = await redis().hgetall(breakerKey(provider))
-    const parsed = breakerRowSchema.safeParse(raw)
-    if (!parsed.success) return { failures: 0, openUntilMs: 0 }
-    return { failures: parsed.data.failures, openUntilMs: parsed.data.openUntil }
+  async read(
+    provider: ProviderId,
+  ): Promise<{ failures: number; openUntilMs: number }> {
+    const raw = await redis().hgetall(breakerKey(provider));
+    const parsed = breakerRowSchema.safeParse(raw);
+    if (!parsed.success) return { failures: 0, openUntilMs: 0 };
+    return {
+      failures: parsed.data.failures,
+      openUntilMs: parsed.data.openUntil,
+    };
   }
 
   async recordFailure(provider: ProviderId, cooldownMs: number): Promise<void> {
-    const key = breakerKey(provider)
-    const failures = await redis().hincrby(key, "failures", 1)
+    const key = breakerKey(provider);
+    const failures = await redis().hincrby(key, "failures", 1);
 
     if (failures >= workerConfig.BREAKER_FAILURE_THRESHOLD) {
-      await redis().hset(key, "openUntil", Date.now() + cooldownMs)
+      await redis().hset(key, "openUntil", Date.now() + cooldownMs);
     }
     // The whole record expires well after the cooldown, so a provider that
     // recovers quietly does not carry a stale failure count for ever.
-    await redis().pexpire(key, cooldownMs * 4)
+    await redis().pexpire(key, cooldownMs * 4);
   }
 
   async recordSuccess(provider: ProviderId): Promise<void> {
-    await redis().del(breakerKey(provider))
+    await redis().del(breakerKey(provider));
   }
 }
 
 /** Per-process breaker state, used when `RUN_TRANSPORT=local`. */
 export class MemoryBreakerStore implements BreakerStore {
-  readonly #rows = new Map<ProviderId, { failures: number; openUntilMs: number }>()
+  readonly #rows = new Map<
+    ProviderId,
+    { failures: number; openUntilMs: number }
+  >();
 
-  async read(provider: ProviderId): Promise<{ failures: number; openUntilMs: number }> {
-    return this.#rows.get(provider) ?? { failures: 0, openUntilMs: 0 }
+  async read(
+    provider: ProviderId,
+  ): Promise<{ failures: number; openUntilMs: number }> {
+    return this.#rows.get(provider) ?? { failures: 0, openUntilMs: 0 };
   }
 
   async recordFailure(provider: ProviderId, cooldownMs: number): Promise<void> {
-    const row = this.#rows.get(provider) ?? { failures: 0, openUntilMs: 0 }
-    row.failures += 1
+    const row = this.#rows.get(provider) ?? { failures: 0, openUntilMs: 0 };
+    row.failures += 1;
     if (row.failures >= workerConfig.BREAKER_FAILURE_THRESHOLD) {
-      row.openUntilMs = Date.now() + cooldownMs
+      row.openUntilMs = Date.now() + cooldownMs;
     }
-    this.#rows.set(provider, row)
+    this.#rows.set(provider, row);
   }
 
   async recordSuccess(provider: ProviderId): Promise<void> {
-    this.#rows.delete(provider)
+    this.#rows.delete(provider);
   }
 }
 
-let breakerStore: BreakerStore | null = null
+let breakerStore: BreakerStore | null = null;
 
 export function setBreakerStore(store: BreakerStore | null): void {
-  breakerStore = store
+  breakerStore = store;
 }
 
 function store(): BreakerStore {
-  breakerStore ??= new RedisBreakerStore()
-  return breakerStore
+  breakerStore ??= new RedisBreakerStore();
+  return breakerStore;
 }
 
-export async function breakerState(provider: ProviderId): Promise<BreakerState> {
-  const { openUntilMs } = await store().read(provider)
-  if (openUntilMs > Date.now()) return { state: "open", until: new Date(openUntilMs) }
-  return { state: "closed" }
+export async function breakerState(
+  provider: ProviderId,
+): Promise<BreakerState> {
+  const { openUntilMs } = await store().read(provider);
+  if (openUntilMs > Date.now())
+    return { state: "open", until: new Date(openUntilMs) };
+  return { state: "closed" };
 }
 
 /**
@@ -180,11 +201,11 @@ export async function recordProviderOutcome(
   outcome: { ok: true } | { ok: false; error: unknown },
 ): Promise<void> {
   if (outcome.ok) {
-    await store().recordSuccess(provider)
-    return
+    await store().recordSuccess(provider);
+    return;
   }
-  if (classify(outcome.error).kind === "permanent") return
-  await store().recordFailure(provider, workerConfig.BREAKER_COOLDOWN_MS)
+  if (classify(outcome.error).kind === "permanent") return;
+  await store().recordFailure(provider, workerConfig.BREAKER_COOLDOWN_MS);
 }
 
 /* --------------------------------------------------- retry classification */
@@ -193,9 +214,11 @@ export type Classification =
   /** Worth another attempt; `retryAfterMs` is the provider's own hint, if given. */
   | { kind: "retryable"; retryAfterMs: number | null; reason: string }
   /** Will fail identically next time. Retrying only converts fast into slow. */
-  | { kind: "permanent"; reason: string }
+  | { kind: "permanent"; reason: string };
 
-const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529])
+const RETRYABLE_STATUSES = new Set([
+  408, 409, 425, 429, 500, 502, 503, 504, 529,
+]);
 
 /**
  * Network-level failures the SDK surfaces as an ordinary `Error` with no status.
@@ -211,28 +234,36 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /\bsocket hang up\b/i,
   /\bnetwork (error|request failed)\b/i,
   /\bfetch failed\b/i,
-]
+];
 
 export function classify(error: unknown): Classification {
-  const facts = errorFacts(error)
+  const facts = errorFacts(error);
 
   // An abort is our own decision — a timeout, a deadline or a cancellation.
   // Whoever made it decides what happens next; the queue must not second-guess it.
   if (facts.name === "AbortError" || facts.name === "TimeoutError") {
-    return { kind: "permanent", reason: "aborted" }
+    return { kind: "permanent", reason: "aborted" };
   }
 
   if (facts.status !== null) {
     return RETRYABLE_STATUSES.has(facts.status)
-      ? { kind: "retryable", retryAfterMs: facts.retryAfterMs, reason: `HTTP ${facts.status}` }
-      : { kind: "permanent", reason: `HTTP ${facts.status}` }
+      ? {
+          kind: "retryable",
+          retryAfterMs: facts.retryAfterMs,
+          reason: `HTTP ${facts.status}`,
+        }
+      : { kind: "permanent", reason: `HTTP ${facts.status}` };
   }
 
   if (TRANSIENT_PATTERNS.some((pattern) => pattern.test(facts.message))) {
-    return { kind: "retryable", retryAfterMs: null, reason: "transient network error" }
+    return {
+      kind: "retryable",
+      retryAfterMs: null,
+      reason: "transient network error",
+    };
   }
 
-  return { kind: "permanent", reason: facts.name }
+  return { kind: "permanent", reason: facts.name };
 }
 
 /**
@@ -243,7 +274,7 @@ export function classify(error: unknown): Classification {
  * a longer 429.
  */
 export function retryDelayMs(error: unknown, fallbackMs: number): number {
-  const classification = classify(error)
-  if (classification.kind === "permanent") return fallbackMs
-  return classification.retryAfterMs ?? fallbackMs
+  const classification = classify(error);
+  if (classification.kind === "permanent") return fallbackMs;
+  return classification.retryAfterMs ?? fallbackMs;
 }
