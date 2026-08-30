@@ -196,7 +196,9 @@ surface is four routes, and each is public for a reason you can state:
 | `POST /api/runs/:id/cancel`  | `{ reason? }` → stop a run in flight.                                            |
 | `GET /api/runs/:id/events`   | SSE progress stream. `Last-Event-ID` or `?afterSeq=` resumes from a cursor.       |
 | `DELETE /api/runs/:id`       | Delete a run and its children.                                                   |
-| `GET /api/usage`             | Token and cost totals for the calling tenant.                                    |
+| `GET /api/usage`             | Spend, plan limits and entitlements for the calling tenant.                      |
+| `GET /api/usage/daily`       | `?from&to` → per-day, per-model spend. Requires the `usage.daily` entitlement.   |
+| `GET /api/billing`           | Subscription, access mode and the plan catalogue.                                |
 | `GET /api/audit`             | The append-only audit trail. Owners and admins.                                  |
 | `GET /api/keys`              | List API keys. Secrets are never returned.                                       |
 | `POST /api/keys`             | `{ name, scopes?, expiresInDays? }` → a key, shown exactly once.                 |
@@ -255,6 +257,66 @@ sce keys revoke <key-id>
 
 See `doc/runbooks/clerk-setup.md` for connecting Clerk, and
 `doc/adr/0005-clerk-identity-and-org-as-tenant.md` for why it is built this way.
+
+### Plans, quotas and spend
+
+Every run costs money at a provider, so three independent brakes sit in front of one:
+
+| Brake | Scope | Refusal |
+| ----- | ----- | ------- |
+| **Per-run ceiling** | one run | candidates settle `SKIPPED`; the run `FAILED` |
+| **Plan quota** | one tenant, one calendar month | `429 quota_exceeded` |
+| **Rate limit** | one credential (and one IP), per minute | `429 rate_limited` |
+| **Subscription state** | one tenant | `402 payment_required` once dunning runs out |
+| **Global daily cap** | the whole install, one UTC day | `503 budget_exhausted` |
+
+Plans are **data**, not branches — `PLANS` in `@sce/shared`:
+
+| Plan | Runs / month | Tokens / month | Spend / month | Concurrent | Features |
+| ---- | ------------ | -------------- | ------------- | ---------- | -------- |
+| Free | 50 | 500K | $5 | 1 | — |
+| Pro | 1,000 | 20M | $100 | 5 | custom panel, API keys, daily usage |
+| Team | 10,000 | 200M | $1,000 | 20 | + webhooks, priority queue |
+| Enterprise | unlimited | unlimited | unlimited | 100 | all |
+
+The same record drives the API's enforcement *and* a client's affordances, so the two cannot drift:
+`GET /api/usage` returns the tenant's position against each limit, computed by the same function that
+will refuse their next request.
+
+The check happens **before** the spend — a quota discovered after three provider calls have been paid
+for is a report, not a limit — and the monthly ceiling is carried *into* a run by narrowing the
+per-run ceilings stamped on the row, so one enormous run cannot spend a whole month's allowance.
+
+Every refusal carries a machine-readable `code` and a typed body, because an HTTP status cannot tell
+"out of monthly runs" from "too many requests per minute" — both are `429`:
+
+```jsonc
+{
+  "error": "Monthly run limit reached — 50 of 50 runs on the Free plan.",
+  "code": "quota_exceeded",
+  "quota": {
+    "limit": "monthly_runs", "used": 50, "ceiling": 50, "remaining": 0,
+    "resetAt": "2026-09-01T00:00:00.000Z", "plan": "free", "upgradeTo": "pro"
+  }
+}
+```
+
+Billing rides on the same Svix-signed webhook as identity: Clerk is the authority on what was paid,
+this database on what that entitles a tenant to do. A failed payment opens a grace window
+(`BILLING_GRACE_PERIOD_DAYS`); after it the workspace is **read-only** — every GET still works and
+nothing is ever hidden or deleted.
+
+Above all of it is one install-wide daily cap. Reaching it engages a persisted, latching kill switch
+that both the API and the workers observe, and only an operator releases it:
+
+```bash
+bun run ops spend                      # today's spend, the switch, the biggest spenders
+bun run ops halt --reason "runaway"    # stop the install from starting new runs
+bun run ops resume                     # release it
+```
+
+See `doc/runbooks/cost.md` for the incident procedures and
+`doc/adr/0006-plans-quotas-and-billing.md` for why each brake exists.
 
 ### Run events
 
@@ -485,6 +547,16 @@ than being silently swapped for a default at the first request that needed it.
 | `RUN_DEADLINE_MS`           | `600000`                | Budget for the whole run                       |
 | `RUN_MAX_TOTAL_TOKENS`      | `400000`                | Per-run token ceiling; `0` disables            |
 | `RUN_MAX_COST_MICRO_CENTS`  | `50000000`              | Per-run cost ceiling ($0.50); `0` disables     |
+| `GLOBAL_DAILY_BUDGET_MICRO_CENTS` | `25000000000`     | Install-wide daily spend cap ($250). Reaching it engages the kill switch; `0` disables |
+| `GLOBAL_BUDGET_REFRESH_MS`  | `15000`                 | How long the API caches today's spend figure   |
+| `KILL_SWITCH_REFRESH_MS`    | `10000`                 | How long a worker caches the kill-switch state |
+| `BILLING_GRACE_PERIOD_DAYS` | `7`                     | Dunning window after a failed payment before a workspace goes read-only |
+| `USAGE_ROLLUP_INTERVAL_MS`  | `300000`                | Daily usage rollup sweep; `0` disables (reporting only) |
+| `RATE_LIMIT_ENABLED`        | `true`                  | Per-route request budgets                      |
+| `RATE_LIMIT_WINDOW_MS`      | `60000`                 | The sliding window every budget is measured over |
+| `RATE_LIMIT_RUNS_PER_WINDOW` | `20`                   | `POST /api/runs`, per credential               |
+| `RATE_LIMIT_READS_PER_WINDOW` | `300`                 | Reads, per credential                          |
+| `RATE_LIMIT_RUNS_PER_IP_PER_WINDOW` | `60`            | `POST /api/runs`, per client IP                |
 | `PROVIDER_MAX_CONCURRENCY`  | `4`                     | Bulkhead: in-flight calls per provider         |
 | `BREAKER_FAILURE_THRESHOLD` | `5`                     | Consecutive failures that open a breaker       |
 | `MAX_OUTPUT_TOKENS`         | `4000`                  | Per candidate; the evaluator gets double       |
@@ -518,6 +590,7 @@ accepts no sessions and reports no error.
 | [ADR-003](doc/adr/0003-bullmq-for-the-run-queue.md)        | BullMQ on Redis for the run queue                 |
 | [ADR-004](doc/adr/0004-durable-progress-bus.md)            | Postgres for replay, Redis Streams for the tail   |
 | [ADR-005](doc/adr/0005-clerk-identity-and-org-as-tenant.md) | Clerk for identity, organization as tenant, keys minted locally |
+| [ADR-006](doc/adr/0006-plans-quotas-and-billing.md)        | Plans as data, quotas before the spend, one global kill switch |
 
 ---
 
