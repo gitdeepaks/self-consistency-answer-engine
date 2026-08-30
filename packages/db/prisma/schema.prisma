@@ -90,12 +90,36 @@ enum AuditAction {
   USER_DELETED
   RUN_CANCELED
   RUN_DELETED
+  PLAN_CHANGED
+  SUBSCRIPTION_UPDATED
+  QUOTA_EXCEEDED
+  BUDGET_TRIPPED
+  KILL_SWITCH_RELEASED
 }
 
 /// Which leg of a run a metered model call belongs to.
 enum UsageKind {
   CANDIDATE
   EVALUATOR
+}
+
+/// Commercial plans. Lowercase so the generated union matches `PlanId` in
+/// @sce/shared exactly — the same no-mapping-layer argument as `ProviderId`.
+enum PlanId {
+  free
+  pro
+  team
+  enterprise
+}
+
+/// Lifecycle of a paid subscription. SCREAMING_SNAKE to match the shared union;
+/// `PAST_DUE` is the dunning state, and `graceEndsAt` is what bounds it.
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  PAUSED
 }
 
 /**
@@ -114,11 +138,13 @@ model Tenant {
   updatedAt  DateTime  @updatedAt
   deletedAt  DateTime?
 
-  memberships Membership[]
-  runs        Run[]
-  usage       UsageRecord[]
-  apiKeys     ApiKey[]
-  auditEvents AuditEvent[]
+  memberships  Membership[]
+  runs         Run[]
+  usage        UsageRecord[]
+  usageDaily   UsageDaily[]
+  apiKeys      ApiKey[]
+  auditEvents  AuditEvent[]
+  subscription Subscription?
 
   @@index([createdAt])
 }
@@ -347,6 +373,8 @@ model UsageRecord {
   @@index([tenantId, createdAt])
   @@index([runId])
   @@index([model, createdAt])
+  /// Global daily spend guard: one range scan across every tenant.
+  @@index([createdAt])
 }
 
 /// Versioned price list. Prices are added, never edited, so a historical
@@ -372,6 +400,96 @@ model ModelPrice {
 
   @@unique([provider, model, effectiveFrom])
   @@index([model, effectiveFrom])
+}
+
+/// Per-tenant, per-day, per-model rollup of `UsageRecord`.
+///
+/// The metering table answers "what did this call cost"; this one answers "what
+/// did last month cost, by model" without scanning every row of it. Rollups are
+/// recomputed idempotently by the worker rather than incremented on write, so a
+/// retried job, a late-arriving record or a backfill all converge on the same
+/// numbers instead of double-counting.
+model UsageDaily {
+  id       String   @id @default(cuid())
+  tenantId String
+  /// Midnight UTC of the day being summarised.
+  day      DateTime @db.Date
+
+  provider ProviderId
+  model    String
+
+  calls          Int    @default(0)
+  inputTokens    Int    @default(0)
+  outputTokens   Int    @default(0)
+  costMicroCents BigInt @default(0)
+
+  /// When this row was last recomputed — the "as of" a dashboard has to show.
+  rolledUpAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, day, provider, model])
+  @@index([tenantId, day])
+  @@index([day])
+}
+
+/**
+ * ---------------------------------------------------- plans and billing
+ */
+
+/// What a tenant pays for, and whether they are paid up.
+///
+/// One row per tenant, created lazily: a tenant with no row is on the free plan
+/// and active, which is the honest reading of "nobody has ever billed them" and
+/// keeps every read total. The provider ids are stored so an inbound webhook
+/// can find the tenant it is about without a second lookup service.
+model Subscription {
+  id       String @id @default(cuid())
+  tenantId String @unique
+
+  plan   PlanId             @default(free)
+  status SubscriptionStatus @default(ACTIVE)
+
+  /// Billing-provider identifiers (Clerk Billing, or Stripe). Unique because
+  /// they are how a webhook resolves its tenant, and two tenants sharing one
+  /// customer id would make that resolution ambiguous.
+  externalCustomerId     String? @unique
+  externalSubscriptionId String? @unique
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean   @default(false)
+
+  /// End of the dunning window opened by a failed payment. Until it passes, a
+  /// `PAST_DUE` tenant keeps full access; after it, writes stop and reads do
+  /// not. Null on every status but `PAST_DUE`.
+  graceEndsAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+/// A named, install-global stop.
+///
+/// The global daily budget cap trips `global.spend`, and the API refuses new
+/// runs until an operator releases it. Persisted rather than held in memory
+/// because it has to hold across every replica and survive the restart that an
+/// incident usually involves — and because "who stopped it, when, and why" is
+/// the first thing anybody asks.
+model KillSwitch {
+  /// The scope name from `killSwitchScopeSchema` in @sce/shared.
+  scope String @id
+
+  engaged Boolean @default(false)
+  reason  String?
+
+  engagedAt  DateTime?
+  releasedAt DateTime?
+  updatedAt  DateTime  @updatedAt
 }
 
 /**

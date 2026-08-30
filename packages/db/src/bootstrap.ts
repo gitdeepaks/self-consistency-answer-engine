@@ -7,6 +7,7 @@ import {
   type Scope,
 } from "@sce/shared"
 import { createApiKey } from "./auth.ts"
+import { ensureUnmeteredPlan } from "./billing.ts"
 import { disconnect } from "./client.ts"
 import { DEFAULT_TENANT_SLUG, ensureTenant } from "./tenancy.ts"
 
@@ -83,6 +84,11 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
 
   const tenant = await ensureTenant(options.tenantSlug, "Default workspace")
+
+  // The workspace an install bootstraps for itself is not a customer, so it is
+  // not held to a commercial plan's monthly ceilings. The global daily spend
+  // cap still applies to it — that is the limit that protects the bill.
+  await ensureUnmeteredPlan(tenant.id)
 
   // No creator: this key was minted by whoever holds the database credentials,
   // not by a user. `verifyApiKey` gives an ownerless key full authority inside

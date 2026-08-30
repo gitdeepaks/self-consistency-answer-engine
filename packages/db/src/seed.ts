@@ -17,6 +17,7 @@ import {
   upsertModelPrice,
   type CandidateSeed,
 } from "./repository.ts"
+import { ensureUnmeteredPlan } from "./billing.ts"
 import { defaultTenant, ensureMembership, ensureUser } from "./tenancy.ts"
 import { redactDatabaseUrl, resolveDatabaseUrl } from "./url.ts"
 
@@ -73,7 +74,12 @@ async function main(): Promise<void> {
   const tenant = await defaultTenant()
   const user = await ensureUser({ email: "demo@example.com", displayName: "Demo User" })
   await ensureMembership({ tenantId: tenant.id, userId: user.id, role: "owner" })
-  console.log(`  tenant:  ${tenant.slug} (${tenant.id})`)
+
+  // The install's own workspace is not a customer, so it is not metered against
+  // a commercial plan. The global daily spend cap still applies to it, which is
+  // the ceiling that actually matters for a local database.
+  const subscription = await ensureUnmeteredPlan(tenant.id)
+  console.log(`  tenant:  ${tenant.slug} (${tenant.id}) on the ${subscription.plan} plan`)
 
   const existing = await prisma.run.count({ where: { tenantId: tenant.id } })
   if (existing > 0) {

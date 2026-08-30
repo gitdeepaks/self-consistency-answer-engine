@@ -50,6 +50,19 @@ export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   return row ? toTenant(row) : null
 }
 
+/**
+ * The tenant mirroring one Clerk organization.
+ *
+ * Used by the billing webhook, which is told about an organization id and has
+ * to find the workspace it pays for. Null when no webhook has mirrored that
+ * organization yet — the caller acknowledges the event rather than inventing a
+ * tenant to attach a subscription to.
+ */
+export async function getTenantByExternalId(externalId: string): Promise<Tenant | null> {
+  const row = await prisma.tenant.findUnique({ where: { externalId } })
+  return row ? toTenant(row) : null
+}
+
 export async function ensureTenant(slug: string, name?: string): Promise<Tenant> {
   const row = await prisma.tenant.upsert({
     where: { slug },

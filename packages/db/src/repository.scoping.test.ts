@@ -12,11 +12,13 @@ import { fileURLToPath } from "node:url"
  * takes. Deliberate exceptions are listed here with a reason, so adding one is
  * a visible decision in the diff rather than an omission.
  *
- * Two files are scanned. `repository.ts` holds the runs and everything hanging
- * off them; `auth.ts` holds credentials and the audit trail. `tenancy.ts` is
- * deliberately *not* scanned: it is the file that creates tenants and
- * memberships in the first place, so "filters by tenant" is not a property it
- * can have — it is the thing every other query's filter refers to.
+ * Four files are scanned. `repository.ts` holds the runs and everything hanging
+ * off them; `auth.ts` holds credentials and the audit trail; `metering.ts` holds
+ * the counters quotas are decided from; `billing.ts` holds subscriptions and the
+ * kill switch. `tenancy.ts` is deliberately *not* scanned: it is the file that
+ * creates tenants and memberships in the first place, so "filters by tenant" is
+ * not a property it can have — it is the thing every other query's filter
+ * refers to.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -51,6 +53,45 @@ const FILES: Scanned[] = [
       findPrice: "reads the install-global price list",
       upsertModelPrice: "writes the install-global price list",
       listOverdueRuns: "takes a RunScope, whose cross-tenant variant is explicit at the call site",
+    },
+  },
+  {
+    file: "metering.ts",
+    source: readFileSync(path.join(HERE, "metering.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "tenant.findMany":
+        "resolves slugs for tenant ids that a scoped aggregate has already produced — it " +
+        "reads no tenant-owned data and cannot widen what the aggregate returned",
+    },
+    exemptFunctions: {
+      globalSpendSince:
+        "the install-wide spend guard; takes a MeteringScope whose cross-tenant variant has " +
+        "to be typed out with its reason at the call site",
+      rollupUsage: "the rollup job recomputes every tenant's day; same explicit MeteringScope",
+      spendByTenant: "the operator cost report is cross-tenant by definition; same MeteringScope",
+    },
+  },
+  {
+    file: "billing.ts",
+    source: readFileSync(path.join(HERE, "billing.ts"), "utf8"),
+    globalModels: {
+      killSwitch:
+        "the install-wide stop. It is the one control that must work when tenancy itself is " +
+        "the thing going wrong, so it has no tenant column and never will",
+    },
+    exemptCalls: {
+      "subscription.findFirst":
+        "this IS the attribution lookup — it decides which tenant a billing-provider customer " +
+        "belongs to, so it cannot be filtered by one. Both identifiers are unique columns",
+    },
+    exemptFunctions: {
+      findTenantIdForBillingCustomer: "resolves the tenant from a provider id — it cannot be given one",
+      getKillSwitch: "reads the install-wide switch",
+      engageKillSwitch: "engages the install-wide switch",
+      releaseKillSwitch: "releases the install-wide switch",
+      parsePlanId: "pure parser for untrusted provider input; touches no database",
+      parseSubscriptionStatus: "pure parser for untrusted provider input; touches no database",
     },
   },
   {
