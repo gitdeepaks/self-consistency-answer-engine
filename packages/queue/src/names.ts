@@ -33,6 +33,17 @@ export function runCancelChannel(runId: string): string {
   return `${ns}:run:${runId}:cancel`
 }
 
+/**
+ * A rate-limit window for one caller against one route budget.
+ *
+ * The caller half is a credential id, a user id or an IP — never a raw API key,
+ * which would put a live secret in a Redis key name and in every `SLOWLOG`
+ * entry that touched it.
+ */
+export function rateLimitKey(bucket: string, subject: string): string {
+  return `${ns}:ratelimit:${bucket}:${subject}`
+}
+
 /** Per-provider circuit breaker state, shared across the worker fleet. */
 export function breakerKey(providerId: string): string {
   return `${ns}:breaker:${providerId}`
