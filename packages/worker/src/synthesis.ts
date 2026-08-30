@@ -62,6 +62,7 @@ export async function processSynthesisJob(
         return;
       case "deadline":
       case "budget":
+      case "halted":
         await concludeFailed(ctx, stop.message);
         return;
       case "finished":

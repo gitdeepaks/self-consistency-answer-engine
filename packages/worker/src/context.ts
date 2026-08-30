@@ -1,6 +1,16 @@
-import { getRunControl, runUsage, type RunControl } from "@sce/db";
+import {
+  getKillSwitch,
+  getRunControl,
+  runUsage,
+  type RunControl,
+} from "@sce/db";
 import { cancellationBus, runBus } from "@sce/queue";
-import { isTerminalRunStatus, type RunEvent } from "@sce/shared";
+import {
+  describeError,
+  GLOBAL_SPEND_SWITCH,
+  isTerminalRunStatus,
+  type RunEvent,
+} from "@sce/shared";
 import { workerConfig } from "./env.ts";
 
 /**
@@ -40,6 +50,8 @@ export type StopReason =
   | { kind: "canceled"; message: string }
   | { kind: "deadline"; message: string }
   | { kind: "budget"; message: string }
+  /** The install-wide spend kill switch is engaged. */
+  | { kind: "halted"; message: string }
   | { kind: "finished"; message: string }
   | { kind: "missing"; message: string };
 
@@ -56,6 +68,13 @@ export async function checkStop(
   runId: string,
   now: Date = new Date(),
 ): Promise<StopReason | null> {
+  // Checked first, and deliberately before the run is even loaded: when the
+  // install's spend guard has tripped, the cheapest possible answer is "no".
+  // The API refuses *new* runs; this is what stops the ones already in flight
+  // from spending the rest of the day's budget while an operator investigates.
+  const halted = await installHalted(now);
+  if (halted !== null) return { kind: "halted", message: halted };
+
   const control = await getRunControl(tenantId, runId);
   if (!control)
     return { kind: "missing", message: `Run ${runId} no longer exists` };
@@ -112,6 +131,57 @@ export async function checkBudget(
     };
   }
   return null;
+}
+
+/* ----------------------------------------------------------- kill switch */
+
+interface HaltCache {
+  readAt: number;
+  reason: string | null;
+}
+
+let haltCache: HaltCache | null = null;
+
+/** Forget the cached kill-switch reading. Tests use this; production does not. */
+export function resetHaltCache(): void {
+  haltCache = null;
+}
+
+/**
+ * Is the install stopped, and why?
+ *
+ * Cached for `KILL_SWITCH_REFRESH_MS` because this is consulted before every
+ * model call across the whole fleet, and a switch that is off — which is
+ * essentially always — should not cost a query per step. The cost of the cache
+ * is that a freshly-tripped switch takes up to one window to reach every
+ * worker; the alternative is a permanent per-step read to make an exceptional
+ * event marginally faster to observe.
+ *
+ * A failure to read it is treated as *not* halted. That is the deliberate
+ * direction: the API has already refused new work, per-run ceilings still
+ * apply, and failing every in-flight run because the switch table was briefly
+ * unreachable would turn a database blip into a fleet-wide outage.
+ */
+async function installHalted(now: Date): Promise<string | null> {
+  const fresh =
+    haltCache !== null &&
+    now.getTime() - haltCache.readAt < workerConfig.KILL_SWITCH_REFRESH_MS;
+  if (fresh && haltCache !== null) return haltCache.reason;
+
+  try {
+    const killSwitch = await getKillSwitch(GLOBAL_SPEND_SWITCH);
+    const reason = killSwitch.engaged
+      ? (killSwitch.reason ??
+        "Spending is paused by an operator — the install-wide budget guard is engaged.")
+      : null;
+    haltCache = { readAt: now.getTime(), reason };
+    return reason;
+  } catch (error) {
+    console.error("[worker] could not read the kill switch", {
+      error: describeError(error),
+    });
+    return null;
+  }
 }
 
 /* ---------------------------------------------------------------- signals */

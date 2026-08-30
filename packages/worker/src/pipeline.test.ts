@@ -4,7 +4,7 @@ import type {
 } from "@ai-sdk/provider";
 import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { CandidateSeed } from "@sce/db";
-import type { ProviderId, RunEvent } from "@sce/shared";
+import { GLOBAL_SPEND_SWITCH, type ProviderId, type RunEvent } from "@sce/shared";
 import { MockLanguageModelV4 } from "ai/test";
 
 /**
@@ -186,9 +186,20 @@ const {
   setCancellationBus,
   setRunBus,
 } = await import("@sce/queue");
-const { cancelRun, createRun, deleteRun, ensureTenant, getRun, listRunEvents } =
-  await import("@sce/db");
+const {
+  cancelRun,
+  createRun,
+  deleteRun,
+  engageKillSwitch,
+  ensureTenant,
+  getRun,
+  listRunEvents,
+  listUsageDaily,
+  releaseKillSwitch,
+} = await import("@sce/db");
 const { processCandidateJob } = await import("./candidate.ts");
+const { resetHaltCache } = await import("./context.ts");
+const { rollupOnce } = await import("./rollup.ts");
 const { processSynthesisJob } = await import("./synthesis.ts");
 const { MemoryBreakerStore, setBreakerStore } = await import("./resilience.ts");
 
@@ -596,6 +607,72 @@ describe("budgets", () => {
     );
     expect(run?.candidates[1]?.error).toContain("token ceiling");
     expect(calls).toHaveLength(1);
+
+    await deleteRun(tenantId, seeded.id);
+  });
+
+  test("the install-wide kill switch stops a run that is already in flight", async () => {
+    // The API refuses *new* runs while the spend guard is engaged. This is the
+    // other half: a run already fanning out must stop too, or the runs in
+    // flight when the cap tripped would spend the rest of the day's budget
+    // while an operator is still reading the page.
+    await engageKillSwitch(GLOBAL_SPEND_SWITCH, "budget guard tripped in a test");
+    resetHaltCache();
+
+    const seeded = await seedRun();
+    await runFlow(seeded.id);
+
+    expect(calls).toHaveLength(0);
+    const run = await getRun(tenantId, seeded.id);
+    expect(run?.candidates.every((c) => c.status === "SKIPPED")).toBe(true);
+    expect(run?.status).toBe("FAILED");
+    expect(run?.error).toContain("budget guard tripped");
+
+    await releaseKillSwitch(GLOBAL_SPEND_SWITCH);
+    resetHaltCache();
+    await deleteRun(tenantId, seeded.id);
+  });
+
+  test("releasing the switch lets the next run through", async () => {
+    const seeded = await seedRun();
+    await runFlow(seeded.id);
+
+    expect(calls.length).toBeGreaterThan(0);
+    const run = await getRun(tenantId, seeded.id);
+    expect(run?.status).toBe("COMPLETE");
+
+    await deleteRun(tenantId, seeded.id);
+  });
+});
+
+describe("usage rollups", () => {
+  test("summarise a run's metered calls, and recomputing changes nothing", async () => {
+    const today = new Date();
+    const callsIn = async (): Promise<number> => {
+      const daily = await listUsageDaily({ tenantId, from: today, to: today });
+      return daily.entries.reduce((sum, entry) => sum + entry.calls, 0);
+    };
+
+    // Measured as a delta: this tenant has been metered by every test above,
+    // and an absolute count would be an assertion about the whole file.
+    await rollupOnce();
+    const before = await callsIn();
+
+    const seeded = await seedRun();
+    await runFlow(seeded.id);
+
+    await rollupOnce();
+    const after = await callsIn();
+    // Three panel members plus the evaluator.
+    expect(after - before).toBe(4);
+
+    // The property that makes a recompute safe to schedule on a timer: running
+    // it again adds nothing. An incrementing rollup would double every sweep.
+    await rollupOnce();
+    expect(await callsIn()).toBe(after);
+
+    const daily = await listUsageDaily({ tenantId, from: today, to: today });
+    expect(daily.rolledUpAt).not.toBeNull();
 
     await deleteRun(tenantId, seeded.id);
   });

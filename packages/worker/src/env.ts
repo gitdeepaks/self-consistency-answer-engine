@@ -72,6 +72,30 @@ const workerEnvSchema = z
     CANDIDATE_DELTA_FLUSH_MS: positiveInt.max(5_000).default(80),
     CANDIDATE_DELTA_FLUSH_CHARS: positiveInt.max(64_000).default(256),
 
+    /**
+     * How long the install-wide kill switch reading is cached.
+     *
+     * Consulted before every model call across the fleet, so a per-step read
+     * would cost a query per candidate to observe a switch that is off
+     * essentially always. The trade is that a freshly-tripped switch takes up
+     * to one window to reach every worker.
+     */
+    KILL_SWITCH_REFRESH_MS: durationMs.default(10_000),
+
+    /**
+     * How often per-tenant daily usage rollups are recomputed. 0 disables them.
+     *
+     * The rollup is what the cost dashboard reads; enforcement never does, so a
+     * stale or disabled rollup can make a report lag but can never let spend
+     * past a limit.
+     */
+    USAGE_ROLLUP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .max(24 * 60 * 60_000)
+      .default(5 * 60_000),
+
     /** How often the deadline reaper sweeps for abandoned runs. 0 disables it. */
     REAPER_INTERVAL_MS: z.coerce
       .number()

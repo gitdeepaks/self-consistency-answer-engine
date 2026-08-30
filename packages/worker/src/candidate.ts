@@ -68,6 +68,7 @@ function stopToResult(stop: StopReason): CandidateResult | null {
       return { status: "CANCELED", error: stop.message };
     case "deadline":
     case "budget":
+    case "halted":
       return { status: "SKIPPED", error: stop.message };
     case "finished":
     case "missing":

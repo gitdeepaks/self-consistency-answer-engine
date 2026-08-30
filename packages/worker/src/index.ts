@@ -12,6 +12,7 @@ import { workerConfig } from "./env.ts";
 import { runJobHandlers } from "./handlers.ts";
 import { resolveEvaluator, resolvePanel } from "./providers.ts";
 import { startReaper, type Reaper } from "./reaper.ts";
+import { startRollup, type Rollup } from "./rollup.ts";
 import { MemoryBreakerStore, setBreakerStore } from "./resilience.ts";
 
 export {
@@ -25,6 +26,7 @@ export {
   resolveProvider,
 } from "./providers.ts";
 export { reapOnce, startReaper } from "./reaper.ts";
+export { rollupOnce, startRollup } from "./rollup.ts";
 export { workerConfig } from "./env.ts";
 
 /**
@@ -60,7 +62,8 @@ export async function startWorker(): Promise<WorkerHandle> {
         "and this process cannot be scaled past one replica.",
     );
     const reaper = startReaper();
-    return { shutdown: () => shutdownLocal(reaper) };
+    const rollup = startRollup();
+    return { shutdown: () => shutdownLocal(reaper, rollup) };
   }
 
   await pingRedis();
@@ -90,6 +93,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     synthesisWorker.waitUntilReady(),
   ]);
   const reaper = startReaper();
+  const rollup = startRollup();
 
   announce();
 
@@ -104,6 +108,7 @@ export async function startWorker(): Promise<WorkerHandle> {
       shuttingDown ??= (async () => {
         console.log("[worker] draining…");
         await reaper.stop();
+        await rollup.stop();
         // `close()` stops accepting new jobs and waits for active ones to
         // finish. That wait is the entire reason a rolling deploy does not
         // orphan runs — a killed worker's jobs would be redelivered, but only
@@ -118,8 +123,9 @@ export async function startWorker(): Promise<WorkerHandle> {
   };
 }
 
-async function shutdownLocal(reaper: Reaper): Promise<void> {
+async function shutdownLocal(reaper: Reaper, rollup: Rollup): Promise<void> {
   await reaper.stop();
+  await rollup.stop();
   setLocalRunJobHandlers(null);
   await disconnect();
 }
