@@ -351,6 +351,12 @@ export const auditActionSchema = z.enum([
   "USER_DELETED",
   "RUN_CANCELED",
   "RUN_DELETED",
+  /* Phase 4 — plans, quotas and the spend guard. */
+  "PLAN_CHANGED",
+  "SUBSCRIPTION_UPDATED",
+  "QUOTA_EXCEEDED",
+  "BUDGET_TRIPPED",
+  "KILL_SWITCH_RELEASED",
 ])
 export type AuditAction = z.infer<typeof auditActionSchema>
 
