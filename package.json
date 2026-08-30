@@ -17,6 +17,7 @@
     "cli": "bun run packages/cli/src/index.tsx",
     "ask": "bun run packages/cli/src/index.tsx",
     "dlq": "bun run packages/worker/src/cli.ts",
+    "ops": "bun run packages/worker/src/cli.ts",
     "db:up": "docker compose -f infra/docker-compose.yml up -d --wait",
     "db:down": "docker compose -f infra/docker-compose.yml down",
     "db:nuke": "docker compose -f infra/docker-compose.yml down -v",

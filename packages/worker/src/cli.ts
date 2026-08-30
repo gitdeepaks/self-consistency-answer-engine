@@ -1,5 +1,13 @@
 #!/usr/bin/env bun
 import {
+  disconnect,
+  getKillSwitch,
+  globalSpendSince,
+  releaseKillSwitch,
+  engageKillSwitch,
+  spendByTenant,
+} from "@sce/db";
+import {
   closeRedis,
   listDeadLetters,
   purgeDeadLetters,
@@ -8,9 +16,15 @@ import {
   replayDeadLetter,
   type DeadLetterQueueName,
 } from "@sce/queue";
-import { describeError } from "@sce/shared";
+import {
+  dayStart,
+  formatMicroCentsUsd,
+  GLOBAL_SPEND_SWITCH,
+  describeError,
+} from "@sce/shared";
 import { z } from "zod";
 import { reapOnce } from "./reaper.ts";
+import { rollupOnce } from "./rollup.ts";
 
 /**
  * Operator commands.
@@ -37,6 +51,11 @@ const USAGE = `sce-worker — operator commands
   purge [--older-than ISO-DATE]  discard failed jobs permanently
   reap                           fail runs that are past their deadline
 
+  spend [--days N] [--limit N]   today's spend, and the biggest spenders
+  rollup                         recompute today's and yesterday's usage rollups
+  halt --reason "..."            stop the install from starting new runs
+  resume                         release the spend kill switch
+
 Queue names are printed by \`list\`.`;
 
 const limitSchema = z.coerce.number().int().positive().max(10_000);
@@ -49,13 +68,21 @@ function flag(argv: readonly string[], name: string): string | null {
   return argv[index + 1] ?? null;
 }
 
-function parseLimit(argv: readonly string[], fallback: number): number {
-  const raw = flag(argv, "limit");
+function parseCount(
+  argv: readonly string[],
+  name: string,
+  fallback: number,
+): number {
+  const raw = flag(argv, name);
   if (raw === null) return fallback;
   const parsed = limitSchema.safeParse(raw);
   if (!parsed.success)
-    throw new Error(`--limit must be a positive integer, got ${raw}`);
+    throw new Error(`--${name} must be a positive integer, got ${raw}`);
   return parsed.data;
+}
+
+function parseLimit(argv: readonly string[], fallback: number): number {
+  return parseCount(argv, "limit", fallback);
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -140,6 +167,86 @@ async function main(argv: readonly string[]): Promise<number> {
       return 0;
     }
 
+    /*
+     * The cost dashboard, until Phase 5 draws one.
+     *
+     * Everything an operator needs during a spend incident: what the install
+     * has spent today against its cap, whether the kill switch has already
+     * tripped, and which tenants the money went to. Printed rather than served,
+     * because the moment it is most needed is the moment a web UI is least
+     * likely to be reachable.
+     */
+    case "spend": {
+      const days = parseCount(rest, "days", 1);
+      const since = new Date(dayStart().getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const scope = {
+        kind: "every-tenant",
+        reason: "the global spend guard measures the whole install",
+      } as const;
+
+      const [total, killSwitch, tenants] = await Promise.all([
+        globalSpendSince({ since, scope }),
+        getKillSwitch(GLOBAL_SPEND_SWITCH),
+        spendByTenant({ scope, from: since, limit: parseCount(rest, "limit", 20) }),
+      ]);
+
+      console.log(`since ${since.toISOString()}  total ${formatMicroCentsUsd(total, 2)}`);
+      console.log(
+        `kill switch: ${
+          killSwitch.engaged
+            ? `ENGAGED at ${killSwitch.engagedAt ?? "unknown"} — ${killSwitch.reason ?? "no reason recorded"}`
+            : "released"
+        }`,
+      );
+      if (tenants.length === 0) {
+        console.log("no metered usage in the window.");
+        return 0;
+      }
+      console.log("");
+      for (const tenant of tenants) {
+        console.log(
+          `${tenant.slug.padEnd(24)} ${formatMicroCentsUsd(tenant.costMicroCents, 2).padStart(10)}  ` +
+            `calls ${String(tenant.calls).padStart(6)}  ` +
+            `tokens ${tenant.inputTokens + tenant.outputTokens}`,
+        );
+      }
+      return 0;
+    }
+
+    case "rollup": {
+      const rows = await rollupOnce();
+      console.log(`Recomputed ${rows} rollup row(s).`);
+      return 0;
+    }
+
+    /*
+     * Stopping and starting the install by hand.
+     *
+     * The budget guard trips the same switch automatically; these exist for the
+     * cases it cannot see — a provider incident, an abuse report, a bad deploy
+     * — and for releasing it afterwards, which nothing automatic ever does.
+     */
+    case "halt": {
+      const reason = flag(rest, "reason");
+      if (reason === null) {
+        console.error('usage: halt --reason "why the install is stopped"');
+        return 2;
+      }
+      const killSwitch = await engageKillSwitch(GLOBAL_SPEND_SWITCH, reason);
+      console.log(`Kill switch engaged at ${killSwitch.engagedAt ?? "now"}: ${reason}`);
+      return 0;
+    }
+
+    case "resume": {
+      const killSwitch = await releaseKillSwitch(GLOBAL_SPEND_SWITCH);
+      console.log(`Kill switch released at ${killSwitch.releasedAt ?? "now"}.`);
+      console.log(
+        "New runs are accepted again. Workers pick this up within " +
+          "KILL_SWITCH_REFRESH_MS, and the API within GLOBAL_BUDGET_REFRESH_MS.",
+      );
+      return 0;
+    }
+
     case "help":
     case "--help":
     case "-h":
@@ -169,6 +276,7 @@ if (import.meta.main) {
     code = 1;
   } finally {
     await closeRedis();
+    await disconnect();
   }
   process.exit(code);
 }
