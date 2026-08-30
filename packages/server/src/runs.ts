@@ -27,9 +27,25 @@ import { config } from "./env.ts"
  * reconnects to whichever replica answers next.
  */
 
+/**
+ * Per-run ceilings, stamped onto the row for the worker to enforce.
+ *
+ * Supplied by the caller rather than read from configuration here, because by
+ * the time a request reaches this function the quota gate has already worked
+ * out how much of the tenant's monthly allowance is left — and *that* is the
+ * number a single run must not exceed. Zero means "no ceiling", matching what
+ * the worker reads.
+ */
+export interface RunLimits {
+  maxTotalTokens: number
+  maxCostMicroCents: number
+}
+
 export interface StartRunOptions {
   idempotencyKey?: string | null
   createdByUserId?: string | null
+  /** Omitted falls back to the process-wide ceilings from `env.ts`. */
+  limits?: RunLimits
 }
 
 export interface StartedRun {
@@ -74,8 +90,8 @@ export async function startRun(
     candidates: seeds,
     idempotencyKey: options.idempotencyKey ?? null,
     deadlineAt: new Date(Date.now() + config.runDeadlineMs),
-    maxTotalTokens: config.runMaxTotalTokens,
-    maxCostMicroCents: config.runMaxCostMicroCents,
+    maxTotalTokens: options.limits?.maxTotalTokens ?? config.runMaxTotalTokens,
+    maxCostMicroCents: options.limits?.maxCostMicroCents ?? config.runMaxCostMicroCents,
   })
 
   // A retry of the same request must not fan out a second panel — that is the

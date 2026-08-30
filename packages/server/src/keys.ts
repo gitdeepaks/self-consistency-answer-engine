@@ -4,6 +4,7 @@ import { actorTypeFor, createApiKeyInputSchema, DEFAULT_SCOPES, type Scope } fro
 import { Hono } from "hono"
 import { actorOf, requirePermission, type AuthEnv } from "./auth/middleware.ts"
 import { requestProvenance } from "./auth/resolve.ts"
+import { assertEntitlement, assertWritable, loadBilling } from "./quota.ts"
 
 /**
  * API key lifecycle.
@@ -48,6 +49,21 @@ const keys = new Hono<AuthEnv>()
   .post("/", requirePermission("key.create"), zValidator("json", createApiKeyInputSchema), async (c) => {
     const actor = actorOf(c)
     const input = c.req.valid("json")
+
+    /*
+     * Two commercial gates before a credential is minted, and they are
+     * different questions:
+     *
+     *   - is this workspace allowed to *have* API keys at all (a plan feature),
+     *   - and is it currently allowed to create anything (an unpaid workspace
+     *     is read-only, and a new key is a write).
+     *
+     * Both are enforced here rather than in the UI, because a key minted by
+     * `curl` spends exactly as much money as one minted by a button.
+     */
+    const billing = await loadBilling(actor.tenantId)
+    assertWritable(billing)
+    assertEntitlement(billing.plan, "api.keys")
 
     const scopes = grantableScopes(actor.scopes, input.scopes)
     if (scopes.length === 0) {

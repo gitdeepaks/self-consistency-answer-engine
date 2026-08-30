@@ -1,6 +1,11 @@
 import { disconnect } from "@sce/db"
 import { closeRedis, pingRedis, queueConfig, runQueue } from "@sce/queue"
-import { describeError, resolveEvaluatorAvailability, resolvePanelAvailability } from "@sce/shared"
+import {
+  describeError,
+  formatMicroCentsUsd,
+  resolveEvaluatorAvailability,
+  resolvePanelAvailability,
+} from "@sce/shared"
 import { app } from "./app.ts"
 import { config } from "./env.ts"
 
@@ -44,6 +49,25 @@ function announce(): void {
       evaluator.route ? `ready via ${evaluator.route}` : "UNAVAILABLE"
     }`,
   )
+  // The spend controls, printed at boot for the same reason the worker prints
+  // its budgets: the number that will refuse a customer at 3am should not have
+  // to be reconstructed from environment variables during the incident.
+  console.log(
+    `  spend cap  ${
+      config.budget.globalDailyMicroCents === 0
+        ? "disabled — nothing bounds install-wide spend"
+        : `${formatMicroCentsUsd(config.budget.globalDailyMicroCents, 2)}/day, install-wide`
+    }`,
+  )
+  console.log(
+    `  limits     ${
+      config.rateLimit.enabled
+        ? `${config.rateLimit.runsPerWindow} runs / ${config.rateLimit.readsPerWindow} reads per ` +
+          `${Math.round(config.rateLimit.windowMs / 1000)}s per credential`
+        : "rate limiting disabled"
+    }  ·  grace ${config.billing.gracePeriodDays}d`,
+  )
+
   if (!panel.some((provider) => provider.route !== null)) {
     console.warn(
       "\n  No provider credentials found. Runs will be created and then fail immediately.\n",

@@ -149,11 +149,22 @@ beforeAll(() => {
 })
 
 const { app } = await import("./app.ts")
-const { createApiKey, defaultTenant, deleteRun, prisma } = await import("@sce/db")
+const { createApiKey, defaultTenant, deleteRun, ensureUnmeteredPlan, prisma } =
+  await import("@sce/db")
 
 // The HTTP surface resolves the tenant from the credential, so cleanup has to
 // scope itself the same way.
 const tenantId = (await defaultTenant()).id
+
+/*
+ * The default workspace is the install's own, exactly as `auth:bootstrap` and
+ * `db:seed` leave it: on the unmetered plan.
+ *
+ * Without this the suite would be testing the free plan's ceilings — one
+ * concurrent run, no custom panel, no API keys — which is a real behaviour with
+ * its own suite in `quota.test.ts`, and not the one *these* tests are about.
+ */
+await ensureUnmeteredPlan(tenantId)
 
 /**
  * These tests authenticate exactly the way a real client does.
@@ -277,8 +288,12 @@ describe("http api", () => {
     const run = await startRun("What is a monad, briefly?")
     expect(run.candidates).toHaveLength(3)
     expect(run.synthesis).toBeNull()
-    // The API's job ends at enqueue; nothing has called a model yet.
-    expect(["PENDING", "QUEUED"]).toContain(run.status)
+    // The API's job ends at enqueue: the response carries the seeded panel and
+    // no answer. It cannot assert a *particular* early status, because this
+    // suite runs the worker in-process — the fan-out genuinely may have started
+    // by the time the response is built, which on the queued transport is
+    // another machine's business entirely.
+    expect(["PENDING", "QUEUED", "FANNING_OUT"]).toContain(run.status)
     expect(run.deadlineAt).not.toBeNull()
   })
 

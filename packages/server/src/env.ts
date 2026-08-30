@@ -95,6 +95,70 @@ const serverEnvSchema = z.object({
   RUN_MAX_COST_MICRO_CENTS: z.coerce.number().int().nonnegative().default(50 * 1_000_000),
 
   /**
+   * Grace period granted when a payment fails, in days.
+   *
+   * Dunning, not deletion: a `PAST_DUE` tenant keeps working until this runs
+   * out, and then goes read-only — every run they have ever made stays
+   * readable. Zero means a failed payment restricts access immediately, which
+   * is legal but hostile; the default is a week.
+   */
+  BILLING_GRACE_PERIOD_DAYS: z.coerce.number().int().nonnegative().max(90).default(7),
+
+  /**
+   * Hard ceiling on what the whole install may spend in one UTC day, in
+   * micro-cents (1e-8 USD).
+   *
+   * This is the blast-radius control that per-tenant quotas cannot be: a bug
+   * that fans out a thousand runs, or a leaked key used by fifty machines, has
+   * nothing to do with any single plan. Reaching it engages a persisted kill
+   * switch that refuses new runs until an operator releases it.
+   *
+   * Zero disables the cap. That is allowed — some installs meter spend
+   * elsewhere — but it is announced at boot, because an install with no ceiling
+   * anywhere is one bug away from an unbounded invoice.
+   */
+  GLOBAL_DAILY_BUDGET_MICRO_CENTS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(250 * 100 * 1_000_000),
+
+  /**
+   * How long today's global spend figure is cached before it is re-read.
+   *
+   * The cost of caching is bounded overshoot — at most one window's worth of
+   * spend past the cap — and the cost of not caching is an aggregate over every
+   * metering row written today, on every single `POST /runs`.
+   */
+  GLOBAL_BUDGET_REFRESH_MS: positiveInt.max(5 * 60_000).default(15_000),
+
+  /** Rate limiting. `false` turns it off entirely — for tests and local work. */
+  RATE_LIMIT_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+
+  /** The sliding window every budget below is measured over. */
+  RATE_LIMIT_WINDOW_MS: positiveInt.max(60 * 60_000).default(60_000),
+
+  /**
+   * Per-window budgets, per credential.
+   *
+   * Distinct per route because the routes are not alike: `POST /runs` starts
+   * model calls and `GET /runs` reads a row, so giving them one shared budget
+   * either throttles reads pointlessly or lets writes through far too fast.
+   */
+  RATE_LIMIT_RUNS_PER_WINDOW: positiveInt.max(100_000).default(20),
+  RATE_LIMIT_READS_PER_WINDOW: positiveInt.max(1_000_000).default(300),
+
+  /**
+   * Per-window budget for run creation keyed by client IP, on top of the
+   * per-credential one. A single address minting keys in a loop is the shape a
+   * credential-only limiter cannot see.
+   */
+  RATE_LIMIT_RUNS_PER_IP_PER_WINDOW: positiveInt.max(100_000).default(60),
+
+  /**
    * Run the worker inside the API process.
    *
    * For a single-machine deployment, and for `RUN_TRANSPORT=local`. Loaded with
@@ -187,6 +251,16 @@ function parseEnv(source: Readonly<Record<string, string | undefined>>): ServerE
     )
   }
 
+  // Not a failure: an install may meter spend somewhere else. But an install
+  // with no ceiling anywhere is one bug away from an unbounded invoice, and
+  // that is worth one line on every boot rather than a surprise at month end.
+  if (env.GLOBAL_DAILY_BUDGET_MICRO_CENTS === 0 && env.NODE_ENV === "production") {
+    console.warn(
+      "[config] GLOBAL_DAILY_BUDGET_MICRO_CENTS=0 — the install-wide daily spend cap is " +
+        "disabled. Per-tenant quotas still apply; nothing bounds total spend.",
+    )
+  }
+
   return env
 }
 
@@ -209,6 +283,20 @@ export const config = {
   runDeadlineMs: env.RUN_DEADLINE_MS,
   runMaxTotalTokens: env.RUN_MAX_TOTAL_TOKENS,
   runMaxCostMicroCents: env.RUN_MAX_COST_MICRO_CENTS,
+  billing: {
+    gracePeriodDays: env.BILLING_GRACE_PERIOD_DAYS,
+  },
+  budget: {
+    globalDailyMicroCents: env.GLOBAL_DAILY_BUDGET_MICRO_CENTS,
+    refreshMs: env.GLOBAL_BUDGET_REFRESH_MS,
+  },
+  rateLimit: {
+    enabled: env.RATE_LIMIT_ENABLED,
+    windowMs: env.RATE_LIMIT_WINDOW_MS,
+    runsPerWindow: env.RATE_LIMIT_RUNS_PER_WINDOW,
+    readsPerWindow: env.RATE_LIMIT_READS_PER_WINDOW,
+    runsPerIpPerWindow: env.RATE_LIMIT_RUNS_PER_IP_PER_WINDOW,
+  },
   embedWorker: env.EMBED_WORKER,
   shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
   clerk: {

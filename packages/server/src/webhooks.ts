@@ -12,6 +12,7 @@ import {
 import { describeError, memberRoleFromClerk } from "@sce/shared"
 import { Hono } from "hono"
 import { config } from "./env.ts"
+import { applyBillingEvent, isBillingEvent } from "./subscriptions.ts"
 
 /**
  * Clerk → Postgres synchronisation.
@@ -56,9 +57,14 @@ function displayName(first: string | null, last: string | null): string | null {
  * Apply one verified event.
  *
  * Returns the audit note for what it did, or null when the event is one we
- * deliberately do not act on — session and billing events, which Clerk sends
- * because the endpoint subscribes broadly and which have no local consequence
- * until Phase 4.
+ * deliberately do not act on — session events, and anything else Clerk sends
+ * because the endpoint subscribes broadly.
+ *
+ * Billing events fall through to `applyBillingEvent`, which owns the
+ * `Subscription` table. Identity and money arrive down the same signed,
+ * deduplicated pipe, so they share the verification and the delivery claim, but
+ * they do not share a switch — what a payment means is a different question
+ * from what a membership means.
  */
 async function apply(event: WebhookEvent): Promise<string | null> {
   switch (event.type) {
@@ -136,7 +142,7 @@ async function apply(event: WebhookEvent): Promise<string | null> {
       // Deliberately not exhaustive. Clerk's union covers sessions, billing,
       // invitations, roles and waitlist entries; subscribing to an event this
       // build does not model must be a no-op, not a 500 that Clerk retries.
-      return null
+      return applyBillingEvent(event)
   }
 }
 
@@ -158,7 +164,7 @@ function auditActionFor(type: WebhookEvent["type"]): Parameters<typeof recordAud
     case "organizationMembership.deleted":
       return "MEMBER_REMOVED"
     default:
-      return "USER_SYNCED"
+      return isBillingEvent(type) ? "SUBSCRIPTION_UPDATED" : "USER_SYNCED"
   }
 }
 

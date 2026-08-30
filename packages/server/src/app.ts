@@ -6,7 +6,6 @@ import {
   listAuditEvents,
   listRuns,
   recordAuditSafely,
-  usageTotals,
 } from "@sce/db"
 import { queueConfig, runBus } from "@sce/queue"
 import {
@@ -38,9 +37,12 @@ import {
 } from "./auth/middleware.ts"
 import { requestProvenance, TENANT_HEADER } from "./auth/resolve.ts"
 import { clerkConfigured, config } from "./env.ts"
-import { describeError } from "./errors.ts"
+import { describeError, isAppError } from "./errors.ts"
 import { keys } from "./keys.ts"
+import { assertEntitlement, assertRunAllowed } from "./quota.ts"
+import { rateLimit } from "./ratelimit.ts"
 import { cancelRun, startRun } from "./runs.ts"
+import { billing, usage } from "./usage.ts"
 import { webhooks } from "./webhooks.ts"
 
 /**
@@ -53,6 +55,25 @@ import { webhooks } from "./webhooks.ts"
  * `isolation.test.ts` exists to keep true.
  */
 type Env = AuthEnv
+
+/**
+ * Per-route request budgets.
+ *
+ * Two, because the routes are not alike: starting a run buys model calls, and
+ * reading one reads a row. A single shared budget would either throttle reads
+ * pointlessly or let writes through far too fast, which is the failure mode of
+ * every "N requests per minute, globally" limiter.
+ *
+ * Run creation is additionally limited per client IP, because a credential-only
+ * limiter cannot see one address minting fresh credentials in a loop.
+ */
+const runBudget = rateLimit({
+  bucket: "runs.create",
+  limit: config.rateLimit.runsPerWindow,
+  ipLimit: config.rateLimit.runsPerIpPerWindow,
+})
+
+const readBudget = rateLimit({ bucket: "reads", limit: config.rateLimit.readsPerWindow })
 
 /**
  * Routes that serve no tenant data, and therefore need no principal.
@@ -75,6 +96,8 @@ const api = new Hono<Env>()
   .use("/runs", requireAuth)
   .use("/runs/*", requireAuth)
   .use("/usage", requireAuth)
+  .use("/usage/*", requireAuth)
+  .use("/billing", requireAuth)
   .use("/keys", requireAuth)
   .use("/keys/*", requireAuth)
   .use("/audit", requireAuth)
@@ -153,16 +176,41 @@ const api = new Hono<Env>()
   .post(
     "/runs",
     requirePermission("run.create"),
+    runBudget,
     zValidator("json", askInputSchema),
     zValidator("header", runHeadersSchema),
     async (c) => {
       const actor = actorOf(c)
       const headers = c.req.valid("header")
-      const { run, created } = await startRun(actor.tenantId, c.req.valid("json"), {
+      const input = c.req.valid("json")
+      const { ip, userAgent } = requestProvenance(c.req.raw)
+
+      /*
+       * The spend gate, before anything is persisted or enqueued.
+       *
+       * Order matters and it is the order of blast radius: the install-wide
+       * budget cap, then whether this subscription can fund new work, then the
+       * plan's own ceilings. Each refusal is a typed `AppError` that `onError`
+       * renders with the limit, the usage and the reset time — a 429 that only
+       * says "429" leaves a client with nothing to do but retry blindly.
+       */
+      const allowance = await assertRunAllowed(actor, { ip, userAgent })
+
+      // Choosing the panel is a paid capability. Enforced here rather than only
+      // hidden in a UI, because a feature gated in the interface alone is not
+      // gated at all.
+      if (input.providers !== undefined) {
+        assertEntitlement(allowance.billing.plan, "panel.custom")
+      }
+
+      const { run, created } = await startRun(actor.tenantId, input, {
         idempotencyKey: headers["idempotency-key"] ?? null,
         // Ownership is recorded at creation, which is what lets `can()` answer
         // "your run or a colleague's?" later without a second lookup.
         createdByUserId: actor.userId,
+        // Narrowed to what is left of the month, so one enormous run cannot
+        // spend an allowance that the pre-flight check just found room in.
+        limits: allowance.limits,
       })
       return c.json({ run }, created ? 201 : 200)
     },
@@ -171,6 +219,7 @@ const api = new Hono<Env>()
   .get(
     "/runs",
     requirePermission("run.read"),
+    readBudget,
     zValidator("query", listQueriesInputSchema),
     async (c) => {
       const { limit, cursor } = c.req.valid("query")
@@ -178,7 +227,7 @@ const api = new Hono<Env>()
     },
   )
 
-  .get("/runs/:id", requirePermission("run.read"), async (c) => {
+  .get("/runs/:id", requirePermission("run.read"), readBudget, async (c) => {
     const actor = actorOf(c)
     const run = await getRun(actor.tenantId, c.req.param("id"))
     // Already tenant-scoped by the query, so a run belonging to somebody else
@@ -270,11 +319,6 @@ const api = new Hono<Env>()
     return c.json({ ok: true })
   })
 
-  /** Metered spend for the calling tenant. Quota enforcement lands in Phase 4. */
-  .get("/usage", requirePermission("usage.read"), async (c) =>
-    c.json({ usage: await usageTotals({ tenantId: actorOf(c).tenantId }) }),
-  )
-
   /** The append-only audit trail. Owners and admins only, by role. */
   .get("/audit", requirePermission("audit.read"), async (c) =>
     c.json({ events: await listAuditEvents({ tenantId: actorOf(c).tenantId }) }),
@@ -297,6 +341,7 @@ const api = new Hono<Env>()
   .get(
     "/runs/:id/events",
     requirePermission("run.read"),
+    readBudget,
     zValidator("query", eventStreamQuerySchema),
     async (c) => {
     const tenantId = actorOf(c).tenantId
@@ -366,6 +411,8 @@ const api = new Hono<Env>()
   // signature instead of a principal — and the RPC types propagate through
   // `.route()` exactly as they do for a chained handler.
   .route("/keys", keys)
+  .route("/usage", usage)
+  .route("/billing", billing)
   .route("/webhooks", webhooks)
 
 /**
@@ -425,9 +472,26 @@ app.use(
 )
 
 app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404))
+
+/**
+ * One place that turns a thrown value into a response.
+ *
+ * An `AppError` is a decision this code made on purpose — a quota, a rate
+ * limit, an unpaid subscription, the spend kill switch — so it renders with its
+ * own status, its machine-readable `code`, the headers a client needs to act on
+ * it, and a typed body that parses against `apiErrorSchema`. It is expected
+ * traffic, not a fault, and is not logged as one.
+ *
+ * Anything else is a bug: it is logged in full and answered with a generic 500,
+ * because the internals of an unexpected failure are exactly what must not
+ * reach a caller.
+ */
 app.onError((error, c) => {
+  if (isAppError(error)) {
+    return c.json(error.body(), error.status, error.headers())
+  }
   console.error("[server] unhandled error", error)
-  return c.json({ error: describeError(error) }, 500)
+  return c.json({ error: describeError(error), code: "internal_error" }, 500)
 })
 
 app.get("/", (c) =>
@@ -442,7 +506,9 @@ app.get("/", (c) =>
       "POST /api/runs/:id/cancel": "{ reason? } -> stop a run in flight",
       "GET  /api/runs/:id/events": "SSE progress stream (Last-Event-ID or ?afterSeq)",
       "DEL  /api/runs/:id": "delete a run",
-      "GET  /api/usage": "token and cost totals for the calling tenant",
+      "GET  /api/usage": "spend, plan limits and entitlements for the calling tenant",
+      "GET  /api/usage/daily": "?from&to -> per-day, per-model spend breakdown",
+      "GET  /api/billing": "subscription, access mode and the plan catalogue",
       "GET  /api/audit": "append-only audit trail for the calling tenant",
       "GET  /api/auth/config": "OAuth issuer + public client id for `sce auth login`",
       "GET  /api/auth/whoami": "the principal behind the current credential",

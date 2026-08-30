@@ -5,6 +5,7 @@ import {
   deleteRun,
   ensureMembership,
   ensureTenant,
+  ensureUnmeteredPlan,
   ensureUser,
   getRun,
   prisma,
@@ -44,6 +45,11 @@ async function makeParty(slug: string, email: string, scopes: readonly Scope[]):
   const tenant = await ensureTenant(slug, slug)
   const user = await ensureUser({ email, displayName: slug })
   await ensureMembership({ tenantId: tenant.id, userId: user.id, role: "owner" })
+  // These tenants exist to test *isolation*, not plans. Minting a key is a paid
+  // capability (`api.keys`), so a free-plan party could not reach the scope
+  // rules this suite is about — the plan gate has its own suite in
+  // `quota.test.ts`.
+  await ensureUnmeteredPlan(tenant.id)
 
   const key = await createApiKey({
     tenantId: tenant.id,
