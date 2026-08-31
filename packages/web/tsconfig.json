@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "isolatedModules": true,
+    "incremental": true,
+    "types": ["bun"],
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*", "next-env.d.ts", ".next/types/**/*.ts", "e2e/**/*", "*.ts", "*.mjs"],
+  "exclude": ["node_modules", ".next"]
+}
