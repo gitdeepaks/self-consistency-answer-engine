@@ -110,7 +110,7 @@ function as(party: Party | null, extra: Record<string, string> = {}): Record<str
 /** Every route that must never serve an unauthenticated or foreign caller. */
 interface Route {
   name: string
-  method: "GET" | "POST" | "DELETE"
+  method: "GET" | "POST" | "PUT" | "DELETE"
   path: () => string
   body?: unknown
   /** What a *valid credential from another tenant* must receive. */
@@ -133,6 +133,46 @@ const PROTECTED: Route[] = [
   { name: "read audit", method: "GET", path: () => "/api/audit", foreign: 404 },
   { name: "list keys", method: "GET", path: () => "/api/keys", foreign: 404 },
   { name: "whoami", method: "GET", path: () => "/api/auth/whoami", foreign: 404 },
+
+  /* Phase 5 — the web app's surface. */
+  { name: "list tags", method: "GET", path: () => "/api/tags", foreign: 404 },
+  { name: "list members", method: "GET", path: () => "/api/members", foreign: 404 },
+  { name: "list workspaces", method: "GET", path: () => "/api/members/workspaces", foreign: 404 },
+  { name: "list shares", method: "GET", path: () => "/api/shares", foreign: 404 },
+  { name: "feedback queue", method: "GET", path: () => "/api/feedback", foreign: 404 },
+  {
+    name: "read a run's shares",
+    method: "GET",
+    path: () => `/api/runs/${aliceRun}/shares`,
+    foreign: 404,
+  },
+  {
+    name: "publish a run",
+    method: "POST",
+    path: () => `/api/runs/${aliceRun}/shares`,
+    body: {},
+    foreign: 404,
+  },
+  {
+    name: "read a run's feedback",
+    method: "GET",
+    path: () => `/api/runs/${aliceRun}/feedback`,
+    foreign: 404,
+  },
+  {
+    name: "leave feedback on a run",
+    method: "POST",
+    path: () => `/api/runs/${aliceRun}/feedback`,
+    body: { rating: "up" },
+    foreign: 404,
+  },
+  {
+    name: "tag a run",
+    method: "PUT",
+    path: () => `/api/runs/${aliceRun}/tags`,
+    body: { tags: ["pwned"] },
+    foreign: 404,
+  },
 ]
 
 async function call(route: Route, headers: Record<string, string>): Promise<Response> {
@@ -289,6 +329,90 @@ describe("tenant isolation", () => {
       headers: as(alice, { "x-sce-tenant": alice.slug }),
     })
     expect(response.status).toBe(200)
+  })
+})
+
+describe("the operations console", () => {
+  /**
+   * Install administration is a different axis from tenant roles.
+   *
+   * An `owner` is the most senior person inside one workspace. If that also
+   * meant "operator of the whole install", every customer's account owner would
+   * hold a cross-tenant view of every other customer — an escalation available
+   * to anyone who can sign up. So the guard reads a deploy-time allowlist, and
+   * these parties are owners of their own tenants and nothing more.
+   */
+  const ADMIN_ROUTES = [
+    "/api/admin/overview",
+    "/api/admin/tenants",
+    "/api/admin/dlq",
+    "/api/admin/whoami",
+  ]
+
+  test("a tenant owner is not an install operator", async () => {
+    for (const path of ADMIN_ROUTES) {
+      const response = await app.request(path, { headers: as(alice) })
+      // 404, not 403: an unauthorised caller is told the console does not
+      // exist. There is nothing here for a customer to appeal, and a 403
+      // advertises the surface.
+      expect(response.status).toBe(404)
+    }
+  })
+
+  test("an anonymous caller gets 401 before the operator check runs", async () => {
+    for (const path of ADMIN_ROUTES) {
+      expect((await app.request(path)).status).toBe(401)
+    }
+  })
+
+  test("the console's writes are refused too", async () => {
+    const replay = await app.request("/api/admin/dlq/replay", {
+      method: "POST",
+      headers: as(alice),
+      body: JSON.stringify({ queue: "sce.candidate", jobId: "1" }),
+    })
+    expect(replay.status).toBe(404)
+
+    const release = await app.request("/api/admin/budget/release", {
+      method: "POST",
+      headers: as(alice),
+      body: JSON.stringify({ reason: "because I said so" }),
+    })
+    expect(release.status).toBe(404)
+  })
+})
+
+describe("public share links", () => {
+  /**
+   * The one genuinely anonymous data route in the API.
+   *
+   * Every way a token can fail — malformed, unknown, revoked, expired — has to
+   * answer the same 404. Telling an anonymous caller that a link *expired*
+   * confirms it once existed, which turns a guessed token into an oracle.
+   */
+  test("every kind of bad token answers the same 404", async () => {
+    const tokens = [
+      "not-a-token",
+      "sce_share_short",
+      `sce_share_${"a".repeat(32)}`,
+      "sce_share_..%2F..%2Fetc%2Fpasswd",
+    ]
+
+    for (const token of tokens) {
+      const response = await app.request(`/api/shared/${token}`)
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({
+        error: "This link is not available",
+        code: "not_found",
+      })
+    }
+  })
+
+  test("the route needs no credential at all", async () => {
+    // It must not answer 401: a share link exists to be opened by somebody with
+    // no account, so reaching it anonymously has to get as far as the lookup.
+    const response = await app.request(`/api/shared/sce_share_${"a".repeat(32)}`)
+    expect(response.status).not.toBe(401)
   })
 })
 

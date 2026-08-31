@@ -187,6 +187,31 @@ const serverEnvSchema = z.object({
   CLERK_OAUTH_CLIENT_ID: z.string().trim().min(1).optional(),
 
   /**
+   * Who may reach the internal operations console, by email address.
+   *
+   * Install administration is a **separate axis** from tenant roles, and this
+   * variable is why. An `owner` is the most senior person inside one workspace;
+   * making that role also mean "operator of the whole install" would hand every
+   * customer's account owner a cross-tenant view of everybody else. So operator
+   * status comes from configuration — a value only somebody with deploy access
+   * can set — and nothing a user, a webhook or a billing provider writes can
+   * grant it.
+   *
+   * Empty (the default) means the console is unreachable for everyone, which is
+   * the correct posture for an install that has not thought about it yet.
+   */
+  SCE_ADMIN_EMAILS: z
+    .string()
+    .trim()
+    .default("")
+    .transform((raw) =>
+      raw
+        .split(",")
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.length > 0),
+    ),
+
+  /**
    * Override for the authorization server's origin.
    *
    * Normally derived from the publishable key, which encodes the instance's
@@ -299,6 +324,8 @@ export const config = {
   },
   embedWorker: env.EMBED_WORKER,
   shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
+  /** Operator email allowlist for the internal console. Empty means nobody. */
+  adminEmails: env.SCE_ADMIN_EMAILS,
   clerk: {
     secretKey: env.CLERK_SECRET_KEY ?? null,
     publishableKey: env.CLERK_PUBLISHABLE_KEY ?? null,

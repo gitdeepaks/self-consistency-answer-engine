@@ -4,8 +4,11 @@ import {
   getRun,
   latestEventSeq,
   listAuditEvents,
+  listRunTags,
   listRuns,
   recordAuditSafely,
+  setRunTags,
+  type RunFilters,
 } from "@sce/db"
 import { queueConfig, runBus } from "@sce/queue"
 import {
@@ -16,12 +19,14 @@ import {
   eventCursorSchema,
   eventStreamQuerySchema,
   isTerminalEvent,
-  listQueriesInputSchema,
   resolveEvaluatorAvailability,
   resolvePanelAvailability,
   runHeadersSchema,
+  runSearchQuerySchema,
+  setRunTagsInputSchema,
   toHealth,
   type RunEvent,
+  type RunSearchQuery,
   type RunStatus,
 } from "@sce/shared"
 import { Hono } from "hono"
@@ -42,6 +47,10 @@ import { keys } from "./keys.ts"
 import { assertEntitlement, assertRunAllowed } from "./quota.ts"
 import { rateLimit } from "./ratelimit.ts"
 import { cancelRun, startRun } from "./runs.ts"
+import { admin } from "./admin/routes.ts"
+import { feedback, feedbackQueue } from "./feedback.ts"
+import { members } from "./members.ts"
+import { publicShares, runShares, shares } from "./shares.ts"
 import { billing, usage } from "./usage.ts"
 import { webhooks } from "./webhooks.ts"
 
@@ -102,6 +111,13 @@ const api = new Hono<Env>()
   .use("/keys/*", requireAuth)
   .use("/audit", requireAuth)
   .use("/auth/whoami", requireAuth)
+  .use("/members", requireAuth)
+  .use("/members/*", requireAuth)
+  .use("/shares", requireAuth)
+  .use("/shares/*", requireAuth)
+  .use("/feedback", requireAuth)
+  .use("/tags", requireAuth)
+  .use("/admin/*", requireAuth)
 
   /**
    * What a client needs to authenticate, before it can authenticate.
@@ -216,15 +232,40 @@ const api = new Hono<Env>()
     },
   )
 
+  /**
+   * Run history, filtered.
+   *
+   * The query is parsed into a `RunSearchQuery` and then translated to
+   * repository filters by `toRunFilters` below. Two properties this preserves:
+   * a call with no parameters means exactly what it meant before search
+   * existed — so the CLI is unchanged — and `mine=true` resolves to the
+   * *actor's* user id rather than to anything the client sends, so it cannot be
+   * turned into "show me a named colleague's runs".
+   */
   .get(
     "/runs",
     requirePermission("run.read"),
     readBudget,
-    zValidator("query", listQueriesInputSchema),
+    zValidator("query", runSearchQuerySchema),
     async (c) => {
-      const { limit, cursor } = c.req.valid("query")
-      return c.json(await listRuns({ tenantId: actorOf(c).tenantId, limit, cursor }))
+      const actor = actorOf(c)
+      const query = c.req.valid("query")
+      return c.json(
+        await listRuns({
+          tenantId: actor.tenantId,
+          limit: query.limit,
+          ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+          filters: toRunFilters(query, actor.userId),
+        }),
+      )
     },
+  )
+
+  /**
+   * Tags in use, with their counts. Feeds the history filter menu.
+   */
+  .get("/tags", requirePermission("run.read"), readBudget, async (c) =>
+    c.json({ tags: await listRunTags({ tenantId: actorOf(c).tenantId }) }),
   )
 
   .get("/runs/:id", requirePermission("run.read"), readBudget, async (c) => {
@@ -285,6 +326,26 @@ const api = new Hono<Env>()
       // Already finished is not an error — a client that cancels a run which
       // completed a moment earlier got what it wanted, just not because of this.
       return c.json({ run: outcome.run, canceled: outcome.outcome === "canceled" })
+    },
+  )
+
+  /**
+   * Replace a run's tags.
+   *
+   * Wholesale rather than add/remove, because the UI is a token field whose
+   * contents *are* the desired state. Gated on `run.create` rather than
+   * `run.delete`: labelling somebody else's run is an ordinary collaborative
+   * act inside a shared library, not a destructive one.
+   */
+  .put(
+    "/runs/:id/tags",
+    requirePermission("run.create"),
+    zValidator("json", setRunTagsInputSchema),
+    async (c) => {
+      const actor = actorOf(c)
+      const tags = await setRunTags(actor.tenantId, c.req.param("id"), c.req.valid("json").tags)
+      if (tags === null) return c.json({ error: "Run not found" }, 404)
+      return c.json({ tags })
     },
   )
 
@@ -410,10 +471,59 @@ const api = new Hono<Env>()
   // own guards — `keys` behind `requireAuth` above, `webhooks` behind a Svix
   // signature instead of a principal — and the RPC types propagate through
   // `.route()` exactly as they do for a chained handler.
+  // Mounted rather than inlined: each is a self-contained surface with its own
+  // guard, and the RPC types propagate through `.route()` exactly as they do
+  // for a chained handler.
+  .route("/runs/:id/shares", runShares)
+  .route("/runs/:id/feedback", feedback)
   .route("/keys", keys)
+  .route("/members", members)
+  .route("/shares", shares)
+  .route("/feedback", feedbackQueue)
   .route("/usage", usage)
   .route("/billing", billing)
+  .route("/admin", admin)
   .route("/webhooks", webhooks)
+  /**
+   * The one genuinely anonymous data route in the API.
+   *
+   * Mounted last and deliberately outside every `requireAuth` above: a share
+   * link exists to be opened by somebody with no account. It reads one run by
+   * capability token and returns the redacted projection — see `shares.ts`.
+   */
+  .route("/shared", publicShares)
+
+/**
+ * A parsed search query, as repository filters.
+ *
+ * The two interesting translations:
+ *
+ * **`to` is widened to the end of its day.** A person filtering "up to the 5th"
+ * means the whole of the 5th; a naive `lt: 2026-09-05T00:00:00Z` silently drops
+ * everything that happened on the day they named, which reads as a bug every
+ * single time.
+ *
+ * **`mine` resolves to the actor's own id**, never to anything the client sent.
+ * There is no parameter that names a user, so the filter cannot be turned into
+ * "show me what my colleague has been asking".
+ */
+function toRunFilters(query: RunSearchQuery, selfUserId: string | null): RunFilters {
+  const dayAfter = (day: string): Date =>
+    new Date(new Date(`${day}T00:00:00Z`).getTime() + 24 * 60 * 60 * 1000)
+
+  return {
+    ...(query.q === undefined ? {} : { q: query.q }),
+    ...(query.status === undefined ? {} : { status: query.status }),
+    ...(query.providers === undefined ? {} : { providers: query.providers }),
+    ...(query.tags === undefined ? {} : { tags: query.tags }),
+    ...(query.from === undefined ? {} : { from: new Date(`${query.from}T00:00:00Z`) }),
+    ...(query.to === undefined ? {} : { to: dayAfter(query.to) }),
+    ...(query.minConfidence === undefined ? {} : { minConfidence: query.minConfidence }),
+    // A key-bound credential has no person, so "only mine" has no meaning for
+    // it and is dropped rather than matching every run with a null owner.
+    ...(query.mine === true && selfUserId !== null ? { createdByUserId: selfUserId } : {}),
+  }
+}
 
 /**
  * The closing event for a run that concluded before anyone subscribed, or null
@@ -464,7 +574,7 @@ app.use(
   cors({
     origin: config.corsOrigin,
     allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key", TENANT_HEADER],
-    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     exposeHeaders: ["WWW-Authenticate"],
     credentials: config.corsOrigin !== "*",
     maxAge: 600,
@@ -501,11 +611,23 @@ app.get("/", (c) =>
       "GET  /api/health": "liveness probe",
       "GET  /api/providers": "panel + evaluator availability",
       "POST /api/runs": "{ prompt, providers?, temperature? } -> queued run (Idempotency-Key)",
-      "GET  /api/runs": "?limit&cursor -> run history",
+      "GET  /api/runs": "?q&status&providers&tags&from&to&minConfidence&mine&limit&cursor",
       "GET  /api/runs/:id": "full run with candidates + synthesis",
       "POST /api/runs/:id/cancel": "{ reason? } -> stop a run in flight",
       "GET  /api/runs/:id/events": "SSE progress stream (Last-Event-ID or ?afterSeq)",
+      "PUT  /api/runs/:id/tags": "{ tags } -> replace a run's labels",
       "DEL  /api/runs/:id": "delete a run",
+      "GET  /api/runs/:id/feedback": "the verdict tally, and the caller's own",
+      "POST /api/runs/:id/feedback": "{ rating, reason?, note? } -> record a verdict",
+      "GET  /api/runs/:id/shares": "public links published for this run",
+      "POST /api/runs/:id/shares": "{ label?, expiresInDays? } -> a public link",
+      "GET  /api/tags": "tags in use, with counts",
+      "GET  /api/shares": "every public link this workspace has published",
+      "DEL  /api/shares/:id": "revoke a link, effective immediately",
+      "GET  /api/shared/:token": "PUBLIC — a shared run, redacted, no credential",
+      "GET  /api/feedback": "thumbs-down triage queue",
+      "GET  /api/members": "the workspace roster, with per-person activity",
+      "GET  /api/members/workspaces": "workspaces the caller belongs to",
       "GET  /api/usage": "spend, plan limits and entitlements for the calling tenant",
       "GET  /api/usage/daily": "?from&to -> per-day, per-model spend breakdown",
       "GET  /api/billing": "subscription, access mode and the plan catalogue",
