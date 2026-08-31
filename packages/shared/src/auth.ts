@@ -309,6 +309,19 @@ export const apiKeySummarySchema = z.object({
 })
 export type ApiKeySummary = z.infer<typeof apiKeySummarySchema>
 
+/**
+ * A key rendered for a human: enough to recognise it, not enough to use it.
+ *
+ * Lives here, beside the summary it renders, rather than in `apikey.ts` with
+ * the minting and hashing. That module imports `node:crypto`, and a module is
+ * the unit a bundler includes — so one pure helper sitting next to the crypto
+ * would drag `node:crypto` into the browser bundle of every surface that
+ * displays a key list. This is presentation; that is a secret primitive.
+ */
+export function maskApiKey(prefix: string): string {
+  return `${prefix}_${"\u2022".repeat(8)}`
+}
+
 /** The one response that carries a secret, returned exactly once at creation. */
 export const apiKeyCreatedSchema = z.object({
   key: apiKeySummarySchema,
@@ -357,6 +370,10 @@ export const auditActionSchema = z.enum([
   "QUOTA_EXCEEDED",
   "BUDGET_TRIPPED",
   "KILL_SWITCH_RELEASED",
+  /* Phase 5 — publishing a run, and the operator actions the console exposes. */
+  "RUN_SHARED",
+  "RUN_SHARE_REVOKED",
+  "DLQ_REPLAYED",
 ])
 export type AuditAction = z.infer<typeof auditActionSchema>
 

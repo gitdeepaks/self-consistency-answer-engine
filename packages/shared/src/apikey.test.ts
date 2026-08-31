@@ -3,10 +3,10 @@ import {
   apiKeySecretMatches,
   hashApiKeySecret,
   looksLikeApiKey,
-  maskApiKey,
   mintApiKey,
   parseApiKey,
 } from "./apikey.ts"
+import { maskApiKey } from "./auth.ts"
 
 /**
  * The credential format.

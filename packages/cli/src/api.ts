@@ -2,15 +2,15 @@ import type { AppType } from "@sce/server"
 import {
   loadRootEnv,
   providerHealthSchema,
-  runEventSchema,
+  readRunEventStream,
   runSchema,
   runSummarySchema,
   usageTotalsSchema,
   type AskInput,
   type ProviderHealth,
   type Run,
-  type RunEvent,
   type RunSummary,
+  type StreamedRunEvent,
 } from "@sce/shared"
 import { hc } from "hono/client"
 import { z } from "zod"
@@ -162,49 +162,21 @@ export async function fetchUsage(): Promise<z.infer<typeof usageTotalsSchema>> {
 
 /* ---------------------------------------------------------------- streaming */
 
-/** One decoded SSE frame: the event, plus the cursor to resume from. */
-export interface StreamedEvent {
-  event: RunEvent
-  /** Durable sequence number, or null for an ephemeral event such as a delta. */
-  seq: number | null
-}
-
-interface RawFrame {
-  id: string | null
-  data: string
-}
-
-/** Split a complete SSE frame into the fields this client cares about. */
-function decodeFrame(frame: string): RawFrame | null {
-  const dataLines: string[] = []
-  let id: string | null = null
-
-  for (const line of frame.split("\n")) {
-    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart())
-    else if (line.startsWith("id:")) id = line.slice(3).trim()
-  }
-  if (dataLines.length === 0) return null
-  return { id, data: dataLines.join("\n") }
-}
-
-const seqSchema = z.coerce.number().int().positive()
-
 /**
  * Follow a run's SSE stream, resuming from a cursor.
  *
- * Frames are split on the blank-line delimiter rather than per chunk, because a
- * single TCP read can carry a partial frame or several frames at once.
- *
- * Every frame is parsed against `runEventSchema`. A frame that does not match —
- * a keep-alive ping, an event type a newer server added, a truncated body — is
- * skipped, which is the only safe thing to do with input that arrived over a
- * network and does not fit the contract.
+ * The framing and parsing live in `@sce/shared` — the web app consumes the same
+ * endpoint with the same three requirements `EventSource` cannot meet (a bearer
+ * header, a cursor the client controls, an `AbortSignal`), and a decoder that
+ * exists twice is a decoder whose two copies eventually disagree about
+ * multi-byte characters or split frames. What stays here is the part that is
+ * genuinely this client's: how it authenticates.
  */
 export async function* streamRun(
   id: string,
   signal: AbortSignal,
   afterSeq = 0,
-): AsyncGenerator<StreamedEvent> {
+): AsyncGenerator<StreamedRunEvent> {
   const res = await client.api.runs[":id"].events.$get(
     { param: { id }, query: { afterSeq: afterSeq > 0 ? String(afterSeq) : undefined } },
     { init: { signal } },
@@ -213,35 +185,5 @@ export async function* streamRun(
     throw new Error(`Could not subscribe to run ${id} (HTTP ${res.status})`)
   }
 
-  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
-  let buffer = ""
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) return
-      buffer += value
-
-      let boundary = buffer.indexOf("\n\n")
-      while (boundary !== -1) {
-        const raw = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        boundary = buffer.indexOf("\n\n")
-
-        const frame = decodeFrame(raw)
-        if (!frame) continue
-
-        const parsed = runEventSchema.safeParse(parseJson(frame.data))
-        if (!parsed.success) continue
-
-        const seq = frame.id === null ? null : seqSchema.safeParse(frame.id)
-        yield {
-          event: parsed.data,
-          seq: seq === null ? null : seq.success ? seq.data : null,
-        }
-      }
-    }
-  } finally {
-    await reader.cancel().catch(() => {})
-  }
+  yield* readRunEventStream(res.body)
 }

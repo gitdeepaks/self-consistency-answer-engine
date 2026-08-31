@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test"
 import type { AskInput, Run } from "@sce/shared"
-import type { StreamedEvent } from "./api.ts"
+import type { StreamedRunEvent } from "@sce/shared"
 
 /**
  * Renders the real TUI against a stubbed backend, so the layout, the event
@@ -19,6 +19,7 @@ const COMPLETED_RUN: Run = {
   completedAt: new Date().toISOString(),
   deadlineAt: null,
   canceledAt: null,
+  tags: [],
   candidates: [
     {
       id: "c1",
@@ -129,7 +130,7 @@ const PROVIDERS = {
  * the ephemeral delta carries `null`. Exercising both here is what keeps the
  * reducer's cursor handling honest.
  */
-const STREAM: StreamedEvent[] = [
+const STREAM: StreamedRunEvent[] = [
   {
     seq: 1,
     event: { type: "run.snapshot", run: { ...COMPLETED_RUN, status: "PENDING", synthesis: null } },
@@ -156,7 +157,7 @@ mock.module("./api.ts", () => ({
     _id: string,
     _signal: AbortSignal,
     afterSeq = 0,
-  ): AsyncGenerator<StreamedEvent> {
+  ): AsyncGenerator<StreamedRunEvent> {
     // Honour the cursor, so a resumed follow behaves the way the server does.
     for (const frame of STREAM) {
       if (frame.seq !== null && frame.seq <= afterSeq) continue

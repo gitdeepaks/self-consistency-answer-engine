@@ -144,12 +144,3 @@ export function apiKeySecretMatches(secret: string, storedHash: string): boolean
   if (presented.length !== stored.length || stored.length === 0) return false
   return timingSafeEqual(presented, stored)
 }
-
-/**
- * A key rendered for a human: enough to recognise it, not enough to use it.
- *
- * This is what a `GET /api/keys` listing returns and what the CLI prints.
- */
-export function maskApiKey(prefix: string): string {
-  return `${prefix}_${"•".repeat(8)}`
-}

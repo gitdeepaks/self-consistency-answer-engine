@@ -206,6 +206,12 @@ export const runSchema = z.object({
   /** Wall-clock deadline for the whole run. Null means no deadline was set. */
   deadlineAt: z.string().nullable(),
   canceledAt: z.string().nullable(),
+  /**
+   * Free-form labels for organising history. Always present, possibly empty —
+   * never optional, so no client has to distinguish "untagged" from "this build
+   * does not know about tags".
+   */
+  tags: z.array(z.string()),
   candidates: z.array(candidateSchema),
   synthesis: synthesisSchema.nullable(),
 });
@@ -216,6 +222,14 @@ export const runSummarySchema = runSchema
   .extend({
     candidateCount: z.number(),
     hasSynthesis: z.boolean(),
+    /**
+     * The evaluator's confidence, hoisted out of the synthesis it belongs to.
+     *
+     * A history list has to sort and filter on this, and a summary that omitted
+     * it would force the client to fetch every run in the page in full just to
+     * colour a badge — twenty extra requests to render one screen.
+     */
+    confidence: z.number().nullable(),
   });
 export type RunSummary = z.infer<typeof runSummarySchema>;
 
