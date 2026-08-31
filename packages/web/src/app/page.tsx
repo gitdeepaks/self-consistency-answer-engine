@@ -2,6 +2,7 @@ import { auth } from "@clerk/nextjs/server"
 import Link from "next/link"
 import { redirect } from "next/navigation"
 import type { ReactElement } from "react"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
 import { authConfigured } from "@/env"
 
@@ -28,6 +29,10 @@ export default async function HomePage(): Promise<ReactElement> {
 
   return (
     <main id="main" className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center px-6 py-16">
+      <div className="fixed right-4 top-4 sm:right-6 sm:top-6">
+        <ThemeToggle />
+      </div>
+
       <p className="text-sm font-medium text-accent">Self-consistency answer engine</p>
       <h1 className="mt-3 text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
         Ask several frontier models. Read one answer.

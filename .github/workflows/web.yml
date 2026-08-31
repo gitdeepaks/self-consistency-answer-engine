@@ -1,0 +1,171 @@
+# Phase 5 gates: the web application.
+#
+# This is *not* the repository-wide pipeline the plan asks for in P0.5 — that
+# one (lint, type-aware lint, type-coverage, the banned-token check, gitleaks,
+# docker build) belongs to Phase 0 and has not been landed yet. What is here is
+# the set of checks Phase 5 itself owes: the web package typechecks, the whole
+# workspace's tests pass against real Postgres and Redis, the app builds, the
+# end-to-end suite is green, and the Core Web Vitals budget holds.
+#
+# Adding the Phase 0 jobs later means extending this file, not replacing it.
+
+name: web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # A new push supersedes the run it interrupted. Nobody reads the results of a
+  # build for a commit that has already been replaced.
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Deterministic and non-secret. Real credentials are never needed: the panel
+  # is mocked in unit tests, and the E2E specs that need a live backend skip
+  # themselves unless SCE_API_KEY is present.
+  DATABASE_URL: postgresql://sce:sce@localhost:5432/sce
+  REDIS_URL: redis://localhost:6379
+  NEXT_PUBLIC_API_URL: http://localhost:8787
+  NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sce
+          POSTGRES_PASSWORD: sce
+          POSTGRES_DB: sce
+        ports: ["5432:5432"]
+        # The tests are the reason this job exists, so the job must not start
+        # until the database can actually answer.
+        options: >-
+          --health-cmd "pg_isready -U sce -d sce"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # `--frozen-lockfile` so a lockfile that drifted from package.json fails
+      # here rather than resolving to different versions than a developer has.
+      - run: bun install --frozen-lockfile
+
+      - name: Generate the Prisma client
+        run: bun run db:generate
+
+      # Deploy rather than push: this is the same command production runs, so a
+      # migration that only works via `db push` cannot pass.
+      - name: Apply migrations
+        run: bun run db:deploy
+
+      - name: Typecheck every package
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build the web app
+        run: bun run --filter @sce/web build
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: verify
+
+    env:
+      CI: "true"
+      NEXT_PUBLIC_API_URL: http://localhost:8787
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+      - run: bun run db:generate
+
+      - name: Install the browser
+        run: bunx playwright install --with-deps chromium
+
+      # The anonymous specs — the front door, share-link 404 behaviour, the skip
+      # link, the theme — need no backend at all. The ones that do carry their
+      # own `test.skip`, so this stays green on a fork with no secrets.
+      - name: End-to-end
+        run: bun run --filter @sce/web e2e
+        env:
+          E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+          SCE_API_KEY: ${{ secrets.E2E_SCE_API_KEY }}
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: packages/web/playwright-report/
+          retention-days: 7
+
+  vitals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: verify
+
+    env:
+      NEXT_PUBLIC_API_URL: http://localhost:8787
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+      - run: bun run db:generate
+      - run: bun run --filter @sce/web build
+
+      - name: Start the app
+        run: |
+          bun run --filter @sce/web start &
+          # Poll rather than sleep: a fixed wait is either flaky or wasteful,
+          # and on a cold CI runner it is reliably both.
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/ >/dev/null && exit 0
+            sleep 1
+          done
+          echo "the app did not come up" >&2
+          exit 1
+
+      - name: Core Web Vitals budget
+        uses: treosh/lighthouse-ci-action@v12
+        with:
+          configPath: packages/web/lighthouserc.json
+          # A regression past the budget fails the build, exactly like a failing
+          # test. A warning nobody is blocked by is a warning nobody reads.
+          uploadArtifacts: true
+          temporaryPublicStorage: true
