@@ -1,4 +1,4 @@
-import type { MemberRole, Tenant, User } from "@sce/shared"
+import type { MemberRole, Tenant, TenantMember, User } from "@sce/shared"
 import { prisma } from "./client.ts"
 import type { Prisma } from "../generated/client.ts"
 
@@ -132,6 +132,58 @@ export async function listMemberships(
     orderBy: { createdAt: "asc" },
   })
   return rows.map((row) => ({ tenant: toTenant(row.tenant), role: row.role }))
+}
+
+/**
+ * The people in one workspace, with what they have actually done in it.
+ *
+ * The join is the reason this exists: Clerk can list an organization's members,
+ * but only this database knows who has started runs here and when they last
+ * did. A team page built from Clerk alone shows a roster; this shows a team.
+ *
+ * Run counts come from one grouped query rather than a count per member, so the
+ * cost is two round trips regardless of how large the organization is.
+ */
+export async function listTenantMembers(options: {
+  tenantId: string
+  /** The caller, so the response can mark which row is them. */
+  selfUserId: string | null
+}): Promise<TenantMember[]> {
+  const [memberships, activity] = await Promise.all([
+    prisma.membership.findMany({
+      where: { tenantId: options.tenantId },
+      include: { user: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.run.groupBy({
+      by: ["createdByUserId"],
+      where: { tenantId: options.tenantId, createdByUserId: { not: null } },
+      _count: { _all: true },
+      _max: { createdAt: true },
+    }),
+  ])
+
+  const byUser = new Map(
+    activity.flatMap((group) =>
+      group.createdByUserId === null
+        ? []
+        : [[group.createdByUserId, { runs: group._count._all, last: group._max.createdAt }] as const],
+    ),
+  )
+
+  return memberships.map((membership) => {
+    const stats = byUser.get(membership.userId)
+    return {
+      userId: membership.userId,
+      email: membership.user.email,
+      displayName: membership.user.displayName,
+      role: membership.role,
+      joinedAt: membership.createdAt.toISOString(),
+      runCount: stats?.runs ?? 0,
+      lastRunAt: stats?.last?.toISOString() ?? null,
+      isSelf: options.selfUserId !== null && membership.userId === options.selfUserId,
+    }
+  })
 }
 
 /* ------------------------------------------------------------ clerk sync */
@@ -348,6 +400,20 @@ export async function removeClerkMembership(input: {
 /* ------------------------------------------------------ principal lookup */
 
 /** The local user behind a Clerk subject, or null if no webhook has arrived. */
+/**
+ * A user by their local id.
+ *
+ * Exists for the install-admin check, which has to answer "is the person behind
+ * this request on the operator list?" and holds only the id the auth layer
+ * resolved. The list itself is keyed by email — an address a person keeps
+ * across Clerk instances and database resets, unlike a cuid — so this is the
+ * lookup that bridges the two.
+ */
+export async function getUserById(userId: string): Promise<User | null> {
+  const row = await prisma.user.findUnique({ where: { id: userId } })
+  return row === null ? null : toUser(row)
+}
+
 export async function findUserByExternalId(externalId: string): Promise<User | null> {
   const row = await prisma.user.findUnique({ where: { externalId } })
   return row === null ? null : toUser(row)

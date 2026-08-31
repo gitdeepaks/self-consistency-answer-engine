@@ -47,6 +47,7 @@ export type MeteringScope =
       reason:
         | "the global spend guard measures the whole install"
         | "the usage rollup recomputes every tenant's day"
+        | "the operator cost report is cross-tenant by definition"
     }
 
 function scopeFilter(scope: MeteringScope): { tenantId?: string } {

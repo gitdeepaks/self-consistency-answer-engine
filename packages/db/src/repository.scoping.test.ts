@@ -12,10 +12,13 @@ import { fileURLToPath } from "node:url"
  * takes. Deliberate exceptions are listed here with a reason, so adding one is
  * a visible decision in the diff rather than an omission.
  *
- * Four files are scanned. `repository.ts` holds the runs and everything hanging
+ * Seven files are scanned. `repository.ts` holds the runs and everything hanging
  * off them; `auth.ts` holds credentials and the audit trail; `metering.ts` holds
  * the counters quotas are decided from; `billing.ts` holds subscriptions and the
- * kill switch. `tenancy.ts` is deliberately *not* scanned: it is the file that
+ * kill switch; `shares.ts` holds public links; `feedback.ts` holds human
+ * verdicts; `admin.ts` is the operations console's cross-tenant reads, every one
+ * of which is listed below with the reason it is allowed to span tenants.
+ * `tenancy.ts` is deliberately *not* scanned: it is the file that
  * creates tenants and memberships in the first place, so "filters by tenant" is
  * not a property it can have — it is the thing every other query's filter
  * refers to.
@@ -92,6 +95,52 @@ const FILES: Scanned[] = [
       releaseKillSwitch: "releases the install-wide switch",
       parsePlanId: "pure parser for untrusted provider input; touches no database",
       parseSubscriptionStatus: "pure parser for untrusted provider input; touches no database",
+    },
+  },
+  {
+    file: "shares.ts",
+    source: readFileSync(path.join(HERE, "shares.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "runShare.findUnique":
+        "this IS the capability lookup — the share token is what decides which tenant's run " +
+        "is served, so it cannot be filtered by one. Keyed on the unique token column",
+      "runShare.update":
+        "the view counter, keyed on the id that the token lookup immediately above returned — " +
+        "a foreign tenant never reaches it, and the write touches no tenant-owned data",
+    },
+    exemptFunctions: {
+      resolveShare:
+        "resolves the tenant from a capability URL — it cannot be given one, exactly as " +
+        "verifyApiKey resolves a tenant from a credential",
+    },
+  },
+  {
+    file: "feedback.ts",
+    source: readFileSync(path.join(HERE, "feedback.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {},
+    exemptFunctions: {},
+  },
+  {
+    file: "admin.ts",
+    source: readFileSync(path.join(HERE, "admin.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "tenant.findMany": "the console's workspace list — the whole point is that it spans tenants",
+      "tenant.count": "an install-wide counter; reads no tenant-owned data",
+      "run.findUnique":
+        "the run inspector resolves an operator-supplied id to the tenant that owns it; it " +
+        "returns identity and cost only, and the run's contents are then read through the " +
+        "tenant-scoped getRun()",
+      "run.count": "an install-wide counter of runs in flight; reads no tenant-owned data",
+      "usageRecord.aggregate":
+        "costs one run, keyed on the run id the lookup immediately above resolved",
+    },
+    exemptFunctions: {
+      adminTenantRows: "the console's workspace list; takes an OperatorScope whose reason is typed at the call site",
+      adminFindRun: "resolves a run without knowing its tenant; same OperatorScope",
+      adminInstallCounts: "install-wide counters; same OperatorScope",
     },
   },
   {

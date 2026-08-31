@@ -33,7 +33,7 @@ import { prisma } from "./client.ts"
 type SubscriptionRow = Awaited<ReturnType<typeof prisma.subscription.findFirstOrThrow>>
 type KillSwitchRow = Awaited<ReturnType<typeof prisma.killSwitch.findFirstOrThrow>>
 
-function toSubscription(row: SubscriptionRow): Subscription {
+export function toSubscription(row: SubscriptionRow): Subscription {
   return {
     plan: row.plan,
     status: row.status,

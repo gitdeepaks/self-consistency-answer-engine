@@ -95,12 +95,35 @@ enum AuditAction {
   QUOTA_EXCEEDED
   BUDGET_TRIPPED
   KILL_SWITCH_RELEASED
+  RUN_SHARED
+  RUN_SHARE_REVOKED
+  DLQ_REPLAYED
 }
 
 /// Which leg of a run a metered model call belongs to.
 enum UsageKind {
   CANDIDATE
   EVALUATOR
+}
+
+/// A person's verdict on a run. Lowercase to match `feedbackRatingSchema` in
+/// @sce/shared with no mapping layer.
+enum FeedbackRating {
+  up
+  down
+}
+
+/// Why an answer was judged wrong. `off_topic` carries an underscore rather
+/// than a hyphen because a Prisma enum member must be a valid identifier, and a
+/// `@map` here would reintroduce the mapping layer every other enum in this
+/// file exists to avoid.
+enum FeedbackReason {
+  incorrect
+  incomplete
+  off_topic
+  unsafe
+  formatting
+  other
 }
 
 /// Commercial plans. Lowercase so the generated union matches `PlanId` in
@@ -145,6 +168,8 @@ model Tenant {
   apiKeys      ApiKey[]
   auditEvents  AuditEvent[]
   subscription Subscription?
+  shares       RunShare[]
+  feedback     RunFeedback[]
 
   @@index([createdAt])
 }
@@ -160,8 +185,10 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships    Membership[]
-  createdRuns    Run[]        @relation("RunCreatedBy")
-  createdApiKeys ApiKey[]     @relation("ApiKeyCreatedBy")
+  createdRuns    Run[]         @relation("RunCreatedBy")
+  createdApiKeys ApiKey[]      @relation("ApiKeyCreatedBy")
+  createdShares  RunShare[]    @relation("RunShareCreatedBy")
+  feedback       RunFeedback[] @relation("RunFeedbackAuthor")
 }
 
 model Membership {
@@ -219,6 +246,12 @@ model Run {
   canceledAt   DateTime?
   cancelReason String?
 
+  /// Free-form labels for organising history. A Postgres `text[]` with a GIN
+  /// index rather than a join table: tags are read on every history query,
+  /// written rarely, never joined *from*, and capped at sixteen per run — the
+  /// exact shape an array column is better at than a third table.
+  tags String[] @default([])
+
   /// Monotonic allocator for `RunEvent.seq`. Incremented inside the same
   /// transaction that writes the event, so sequence numbers are gap-free even
   /// with several workers appending to one run.
@@ -234,6 +267,8 @@ model Run {
   synthesis  Synthesis?
   events     RunEvent[]
   usage      UsageRecord[]
+  shares     RunShare[]
+  feedback   RunFeedback[]
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, createdAt])
@@ -241,6 +276,14 @@ model Run {
   @@index([createdByUserId])
   /// Reaper query: find runs past their deadline that no worker finished.
   @@index([status, deadlineAt])
+  /// History filtering by tag. GIN, because the predicate is array containment.
+  @@index([tags], type: Gin)
+  /// Free-text history search. `GET /api/runs?q=` compiles to `ILIKE '%…%'`,
+  /// and a leading wildcard makes a B-tree index inert — the trigram operator
+  /// class is what turns that predicate into an index scan. Declared here, not
+  /// only in the migration, so `prisma migrate dev` does not propose dropping
+  /// an index it cannot otherwise see.
+  @@index([prompt(ops: raw("gin_trgm_ops"))], map: "Run_prompt_trgm_idx", type: Gin)
 }
 
 model Candidate {
@@ -310,6 +353,102 @@ model Synthesis {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// The other half of free-text search: people look for the answer they got,
+  /// not only the question they asked. Declared here, not only in the migration,
+  /// so `prisma migrate dev` does not propose dropping an index it cannot
+  /// otherwise see. Offloaded bodies are null here and are therefore matched by
+  /// prompt alone — a stated limitation, not a bug.
+  @@index([finalAnswer(ops: raw("gin_trgm_ops"))], map: "Synthesis_finalAnswer_trgm_idx", type: Gin)
+}
+
+/**
+ * ------------------------------------------------- sharing and feedback
+ */
+
+/// A public, read-only link to one finished run.
+///
+/// The token is a **capability**: holding the link is the whole authorization,
+/// and it grants exactly one thing — reading the projection `toSharedRun`
+/// builds, which carries the synthesised answer and nothing that identifies the
+/// person, the workspace or the spend behind it.
+///
+/// The token is stored in plaintext, alone among the secrets in this schema.
+/// `share.ts` in @sce/shared argues it out: a share token reaches one run that
+/// is already sitting in this same database in plaintext, so hashing it would
+/// guard a door in a glass wall — while making the link unrecoverable, which is
+/// the behaviour that would actually stop anyone using the feature. What does
+/// the work instead is `expiresAt`, `revokedAt`, and the owner being able to
+/// enumerate every link they have ever created.
+model RunShare {
+  id              String  @id @default(cuid())
+  tenantId        String
+  runId           String
+  /// The person who published it. Null only for a link created by a key-bound
+  /// credential that has no user attached.
+  createdByUserId String?
+
+  /// `sce_share_<43 chars>`. Unique because it is the lookup key: resolving a
+  /// visitor's link is one indexed read, not a scan.
+  token String  @unique
+  /// Optional human label, so a workspace with twenty links stays navigable.
+  label String?
+
+  /// Null means the link does not expire — allowed, and stated in words in the
+  /// UI rather than left as a blank field to be misread as "safe by default".
+  expiresAt DateTime?
+  /// Revocation is a timestamp, not a delete: the row outlives the link so a
+  /// dead link can be explained rather than merely 404.
+  revokedAt DateTime?
+
+  /// Cheapest possible answer to "did anybody actually open it".
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run       Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  createdBy User?  @relation("RunShareCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([runId])
+}
+
+/// One person's verdict on one run.
+///
+/// This is the eval set's cheapest input, not a satisfaction metric — a
+/// thumbs-down with a sentence attached is a labelled failure case that cost
+/// nothing to collect, and Phase 7 reads this table directly.
+///
+/// `userId` is required and the pair is unique, so a person has exactly one
+/// verdict per run: changing your mind corrects a label rather than adding a
+/// contradictory second one, and a table of those is not a dataset. A
+/// credential with no person behind it — a CI key — cannot leave feedback at
+/// all, which the route enforces before it reaches here.
+model RunFeedback {
+  id       String @id @default(cuid())
+  tenantId String
+  runId    String
+  userId   String
+
+  rating FeedbackRating
+  reason FeedbackReason?
+  /// Stored verbatim. It is the part a human will actually read during triage.
+  note   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run    Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user   User   @relation("RunFeedbackAuthor", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, userId])
+  @@index([tenantId, createdAt])
+  /// The triage queue: every thumbs-down in a workspace, newest first.
+  @@index([tenantId, rating, createdAt])
 }
 
 /**

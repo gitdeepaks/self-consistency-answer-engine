@@ -156,6 +156,7 @@ export async function toRun(
     completedAt: row.completedAt?.toISOString() ?? null,
     deadlineAt: row.deadlineAt?.toISOString() ?? null,
     canceledAt: row.canceledAt?.toISOString() ?? null,
+    tags: row.tags,
     candidates: await Promise.all(row.candidates.map(toCandidate)),
     synthesis: row.synthesis ? await toSynthesis(row.synthesis) : null,
   }
@@ -641,17 +642,108 @@ export async function getRun(tenantId: string, runId: string): Promise<Run | nul
   return row ? toRun(row) : null
 }
 
+/**
+ * Filters a history query may carry, beyond the page it asks for.
+ *
+ * Every field is optional and an absent field means "do not constrain this",
+ * which is what keeps `GET /api/runs` with no parameters meaning exactly what
+ * it meant before search existed — the CLI's calls are unchanged.
+ */
+export interface RunFilters {
+  /** Free text, matched case-insensitively against prompt and final answer. */
+  q?: string
+  status?: readonly RunStatus[]
+  providers?: readonly ProviderId[]
+  tags?: readonly string[]
+  from?: Date
+  /** Exclusive upper bound. The route widens a `YYYY-MM-DD` to the day's end. */
+  to?: Date
+  minConfidence?: number
+  /** Only runs started by this person. */
+  createdByUserId?: string
+}
+
+/**
+ * Translate filters into a Prisma predicate.
+ *
+ * Two decisions worth naming:
+ *
+ * **Free text spans two tables.** A person searching their history means "the
+ * question I asked, or the answer I got", so `q` is an OR across `Run.prompt`
+ * and the related `Synthesis.finalAnswer`. The migration adds trigram GIN
+ * indexes on both columns, because `contains` compiles to `ILIKE '%…%'` and a
+ * leading wildcard makes a B-tree index inert.
+ *
+ * **Offloaded answers are searched by prompt only.** A body over
+ * `LARGE_BODY_THRESHOLD_BYTES` lives in object storage and its column is null,
+ * so no SQL predicate can see it. That is a real limitation rather than a bug
+ * to hide: the alternative is either pulling every blob on every search, or a
+ * second search index, and neither is worth it before there is a user asking
+ * for it. The prompt still matches, which is how people find a run in practice.
+ */
+function runFilterWhere(tenantId: string, filters: RunFilters): Prisma.RunWhereInput {
+  const where: Prisma.RunWhereInput = { tenantId }
+
+  if (filters.q !== undefined && filters.q.length > 0) {
+    where.OR = [
+      { prompt: { contains: filters.q, mode: "insensitive" } },
+      { synthesis: { finalAnswer: { contains: filters.q, mode: "insensitive" } } },
+    ]
+  }
+
+  if (filters.status !== undefined && filters.status.length > 0) {
+    where.status = { in: [...filters.status] }
+  }
+
+  // `some` rather than `every`: choosing OpenAI and Google means "runs that
+  // asked either of them", which is what a multi-select filter reads as. An
+  // `every` would return runs whose *entire* panel was inside the selection,
+  // which is a different and much less useful question.
+  if (filters.providers !== undefined && filters.providers.length > 0) {
+    where.candidates = { some: { provider: { in: [...filters.providers] } } }
+  }
+
+  if (filters.tags !== undefined && filters.tags.length > 0) {
+    where.tags = { hasSome: [...filters.tags] }
+  }
+
+  if (filters.from !== undefined || filters.to !== undefined) {
+    where.createdAt = {
+      ...(filters.from === undefined ? {} : { gte: filters.from }),
+      ...(filters.to === undefined ? {} : { lt: filters.to }),
+    }
+  }
+
+  // Implies the run has a synthesis at all, which is the intended reading:
+  // "confidence at least 0" still excludes runs that never produced one. The
+  // free-text clause above puts its own synthesis predicate inside `OR`, so
+  // these two never contend for this field.
+  if (filters.minConfidence !== undefined) {
+    where.synthesis = { confidence: { gte: filters.minConfidence } }
+  }
+
+  if (filters.createdByUserId !== undefined) {
+    where.createdByUserId = filters.createdByUserId
+  }
+
+  return where
+}
+
 export async function listRuns(options: {
   tenantId: string
   limit: number
   cursor?: string
+  filters?: RunFilters
 }): Promise<{ items: RunSummary[]; nextCursor: string | null }> {
   const rows = await prisma.run.findMany({
-    where: { tenantId: options.tenantId },
+    where: runFilterWhere(options.tenantId, options.filters ?? {}),
     take: options.limit + 1,
     ...(options.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
     orderBy: { createdAt: "desc" },
-    include: { _count: { select: { candidates: true } }, synthesis: { select: { id: true } } },
+    include: {
+      _count: { select: { candidates: true } },
+      synthesis: { select: { id: true, confidence: true } },
+    },
   })
 
   const page = rows.slice(0, options.limit)
@@ -670,11 +762,67 @@ export async function listRuns(options: {
       completedAt: row.completedAt?.toISOString() ?? null,
       deadlineAt: row.deadlineAt?.toISOString() ?? null,
       canceledAt: row.canceledAt?.toISOString() ?? null,
+      tags: row.tags,
       candidateCount: row._count.candidates,
       hasSynthesis: row.synthesis !== null,
+      confidence: row.synthesis?.confidence ?? null,
     })),
     nextCursor,
   }
+}
+
+/**
+ * Replace a run's tags.
+ *
+ * Wholesale rather than add/remove, because the UI is a token field whose
+ * contents *are* the desired state — a patch API would need the client to
+ * compute a diff it does not have, and two people editing tags concurrently
+ * would produce a union nobody asked for either way.
+ *
+ * Deduplicated here rather than trusted from the caller: `["a", "a"]` is a
+ * plausible thing for a form to submit and a silly thing to store.
+ */
+export async function setRunTags(
+  tenantId: string,
+  runId: string,
+  tags: readonly string[],
+): Promise<string[] | null> {
+  const unique = [...new Set(tags)]
+  const result = await prisma.run.updateMany({
+    where: { id: runId, tenantId },
+    data: { tags: unique },
+  })
+  return result.count > 0 ? unique : null
+}
+
+/**
+ * Every tag in use in a workspace, with how many runs carry it.
+ *
+ * Computed by reading the tag arrays of a bounded window of recent runs rather
+ * than by unnesting the whole table: this feeds a filter menu, where the tags
+ * somebody used this quarter are the useful ones and a complete historical
+ * census is not worth a full scan.
+ */
+export async function listRunTags(options: {
+  tenantId: string
+  /** How many recent runs to consider. */
+  scan?: number
+}): Promise<{ tag: string; count: number }[]> {
+  const rows = await prisma.run.findMany({
+    where: { tenantId: options.tenantId, NOT: { tags: { isEmpty: true } } },
+    select: { tags: true },
+    orderBy: { createdAt: "desc" },
+    take: options.scan ?? 500,
+  })
+
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    for (const tag of row.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+  }
+
+  return [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
 }
 
 export async function countRuns(tenantId: string): Promise<number> {
