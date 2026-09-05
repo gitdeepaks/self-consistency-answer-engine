@@ -1,0 +1,94 @@
+# Phase 6 gates: the public API and the SDK.
+#
+# Separate from `web.yml` because it protects a different thing and fails for a
+# different reason. `web.yml` asks "does the product still work?"; this asks
+# "have we broken somebody else's code?" — a question whose answer has to be
+# unambiguous in a pull request, and whose failure is fixed by a decision rather
+# than by a patch.
+#
+# Nothing here needs Postgres or Redis. The specification is a pure function of
+# the route table, and the SDK's tests run against a fetch they control, so this
+# job is fast enough to be the one people read first.
+
+name: api
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Never connected to. Present because importing the server's route table
+  # imports its configuration, which is parsed at boot and refuses to be absent.
+  DATABASE_URL: postgresql://sce:sce@localhost:5432/sce
+  REDIS_URL: redis://localhost:6379
+  # The in-process transport, so importing `@sce/queue` does not try to reach a
+  # Redis that this job deliberately does not run.
+  RUN_TRANSPORT: local
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The compatibility check compares against the base branch, so a
+          # shallow clone with one commit has nothing to compare with — and
+          # would pass silently, which is the worst possible outcome for a gate.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # The document is generated from the Zod schemas, which are generated from
+      # nothing — but the Prisma client is imported along the way.
+      - name: Generate the Prisma client
+        run: bun run db:generate
+
+      - name: Typecheck the API and the SDK
+        run: |
+          bun run --filter @sce/shared typecheck
+          bun run --filter @sce/server typecheck
+          bun run --filter @sce/sdk typecheck
+
+      # Two failures, two different fixes:
+      #   stale spec      → `bun run api:spec`, and read the diff;
+      #   breaking change → make it additive, or version it.
+      - name: The published contract
+        run: bun run api:check
+        env:
+          # The base branch, explicitly. Relying on the fallback would let a
+          # misconfigured checkout quietly compare against nothing.
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+
+      - name: Contract and SDK tests
+        run: bun test packages/shared packages/sdk packages/server/src/v1 infra
+
+      # A package that does not build is a package nobody can install, and the
+      # declaration emit is the half most likely to break — it depends on a
+      # post-process that rewrites import extensions.
+      - name: Build the SDK for every target
+        run: bun run --filter @sce/sdk build
+
+      - name: The published types resolve
+        run: |
+          test -f packages/sdk/dist/index.js
+          test -f packages/sdk/dist/browser/index.js
+          test -f packages/sdk/dist/bun/index.js
+          test -f packages/sdk/dist/types/sdk/src/index.d.ts
+          # A `.ts` specifier left in a declaration file resolves to nothing in a
+          # consumer's project: every export reads as missing while the runtime
+          # works perfectly.
+          ! grep -rE 'from "\.\.?/[^"]*\.ts"' packages/sdk/dist/types
+          # A Node builtin in the browser bundle is the other silent break — it
+          # fails at a consumer's bundler, long after this job was green.
+          ! grep -q 'node:' packages/sdk/dist/browser/index.js

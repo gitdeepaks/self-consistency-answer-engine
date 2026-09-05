@@ -36,6 +36,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "scale-test": "bun run infra/scale-test.ts",
+    "api:spec": "bun run infra/api-spec.ts",
+    "api:check": "bun run infra/api-compat.ts",
     "e2e": "bun run --filter @sce/web e2e"
   },
   "devDependencies": {
