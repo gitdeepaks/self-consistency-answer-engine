@@ -1,5 +1,6 @@
 import { can, type Actor, type DenialReason, type Permission, type Resource } from "@sce/shared"
 import type { Context, MiddlewareHandler } from "hono"
+import type { RequestIdEnv } from "../request-id.ts"
 import { authenticate } from "./resolve.ts"
 
 /**
@@ -22,8 +23,13 @@ import { authenticate } from "./resolve.ts"
  * read `actor.tenantId` and nothing else as an owner — there is no second
  * source for it, which is what makes the isolation suite's guarantee hold for
  * routes nobody has written yet.
+ *
+ * `requestId` comes in from `RequestIdEnv` rather than being declared again
+ * here, because it is set by a middleware that runs before this one and is read
+ * by the public error envelope afterwards — an intersection keeps one
+ * definition of it and lets both halves of the request see the same value.
  */
-export type AuthEnv = { Variables: { actor: Actor } }
+export type AuthEnv = RequestIdEnv & { Variables: { actor: Actor } }
 
 /** The actor for the current request. */
 export function actorOf(c: Context<AuthEnv>): Actor {

@@ -159,6 +159,101 @@ export class BudgetExhaustedError extends AppError {
   }
 }
 
+/* -------------------------------------------------- the ordinary refusals */
+
+/*
+ * The four below carry no typed detail beyond their code, which is why they did
+ * not exist until Phase 6: `/api` handlers return them inline as `c.json(…,
+ * 404)` and that was enough for a client that ships with the server.
+ *
+ * `/v1` cannot do that. `@hono/zod-openapi` checks a handler's return against
+ * the responses the route declares, so a handler that returns a bare `Response`
+ * for its error paths does not type-check — and making the error helpers return
+ * a typed response for every declared status would put the error envelope back
+ * in twenty places. Throwing is both the fix and the better design: an error is
+ * raised where it is discovered, rendered where every error is rendered, and a
+ * handler's signature describes only what it does when it succeeds.
+ */
+
+/**
+ * No usable credential.
+ *
+ * The message says nothing beyond "authenticate", deliberately: telling an
+ * anonymous caller whether a key is *revoked* or *unknown* tells them which half
+ * of a guess was right. The reason goes to the log against the request id.
+ *
+ * `WWW-Authenticate` is on the response because it is what the status code
+ * means — a client that receives one knows to go and authenticate, which is
+ * what `sce auth login` keys off.
+ */
+export class UnauthorizedError extends AppError {
+  readonly code = "unauthorized" as const
+
+  constructor(message = "Authentication required") {
+    super(message)
+  }
+
+  override headers(): Record<string, string> {
+    return { "WWW-Authenticate": 'Bearer realm="sce", error="invalid_token"' }
+  }
+
+  body(): ApiError {
+    return { error: this.message, code: this.code }
+  }
+}
+
+/** The resource does not exist, or belongs to another tenant. Never both. */
+export class NotFoundError extends AppError {
+  readonly code = "not_found" as const
+
+  constructor(what: string) {
+    super(`No such ${what}`)
+  }
+
+  body(): ApiError {
+    return { error: this.message, code: this.code }
+  }
+}
+
+/** The caller is known and may not do this. */
+export class ForbiddenError extends AppError {
+  readonly code = "forbidden" as const
+
+  body(): ApiError {
+    return { error: this.message, code: this.code }
+  }
+}
+
+/** The request contradicts the resource's current state. */
+export class ConflictError extends AppError {
+  readonly code = "conflict" as const
+
+  body(): ApiError {
+    return { error: this.message, code: this.code }
+  }
+}
+
+/**
+ * The request did not match its schema.
+ *
+ * Carries the offending paths, because the difference between "validation
+ * failed" and "prompt: must be at least 3 characters" is the difference between
+ * a support conversation and a fix.
+ */
+export class RequestValidationError extends AppError {
+  readonly code = "validation_failed" as const
+  readonly fields: readonly { path: string; message: string }[]
+
+  constructor(message: string, fields: readonly { path: string; message: string }[]) {
+    super(message)
+    this.fields = fields
+  }
+
+  body(): ApiError {
+    return { error: this.message, code: this.code, fields: [...this.fields] }
+  }
+}
+
 /** Is this thrown value one of ours? */
 export function isAppError(error: unknown): error is AppError {
   return error instanceof AppError

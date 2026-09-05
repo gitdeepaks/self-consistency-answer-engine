@@ -8,7 +8,6 @@ import {
   listRuns,
   recordAuditSafely,
   setRunTags,
-  type RunFilters,
 } from "@sce/db"
 import { queueConfig, runBus } from "@sce/queue"
 import {
@@ -25,8 +24,9 @@ import {
   runSearchQuerySchema,
   setRunTagsInputSchema,
   toHealth,
+  API_VERSION,
+  REQUEST_ID_HEADER,
   type RunEvent,
-  type RunSearchQuery,
   type RunStatus,
 } from "@sce/shared"
 import { Hono } from "hono"
@@ -48,6 +48,9 @@ import { assertEntitlement, assertRunAllowed } from "./quota.ts"
 import { rateLimit } from "./ratelimit.ts"
 import { cancelRun, startRun } from "./runs.ts"
 import { admin } from "./admin/routes.ts"
+import { toRunFilters } from "./filters.ts"
+import { requestId, requestIdOf } from "./request-id.ts"
+import { renderV1Error, v1 } from "./v1/app.ts"
 import { feedback, feedbackQueue } from "./feedback.ts"
 import { members } from "./members.ts"
 import { publicShares, runShares, shares } from "./shares.ts"
@@ -494,38 +497,6 @@ const api = new Hono<Env>()
   .route("/shared", publicShares)
 
 /**
- * A parsed search query, as repository filters.
- *
- * The two interesting translations:
- *
- * **`to` is widened to the end of its day.** A person filtering "up to the 5th"
- * means the whole of the 5th; a naive `lt: 2026-09-05T00:00:00Z` silently drops
- * everything that happened on the day they named, which reads as a bug every
- * single time.
- *
- * **`mine` resolves to the actor's own id**, never to anything the client sent.
- * There is no parameter that names a user, so the filter cannot be turned into
- * "show me what my colleague has been asking".
- */
-function toRunFilters(query: RunSearchQuery, selfUserId: string | null): RunFilters {
-  const dayAfter = (day: string): Date =>
-    new Date(new Date(`${day}T00:00:00Z`).getTime() + 24 * 60 * 60 * 1000)
-
-  return {
-    ...(query.q === undefined ? {} : { q: query.q }),
-    ...(query.status === undefined ? {} : { status: query.status }),
-    ...(query.providers === undefined ? {} : { providers: query.providers }),
-    ...(query.tags === undefined ? {} : { tags: query.tags }),
-    ...(query.from === undefined ? {} : { from: new Date(`${query.from}T00:00:00Z`) }),
-    ...(query.to === undefined ? {} : { to: dayAfter(query.to) }),
-    ...(query.minConfidence === undefined ? {} : { minConfidence: query.minConfidence }),
-    // A key-bound credential has no person, so "only mine" has no meaning for
-    // it and is dropped rather than matching every run with a null owner.
-    ...(query.mine === true && selfUserId !== null ? { createdByUserId: selfUserId } : {}),
-  }
-}
-
-/**
  * The closing event for a run that concluded before anyone subscribed, or null
  * when the run is still in flight.
  *
@@ -556,10 +527,20 @@ function terminalEventFor(
   }
 }
 
-const app = new Hono()
+const app = new Hono<AuthEnv>()
 
 // Bun sets NODE_ENV=test during `bun test`; request logs would drown the output.
 if (process.env.NODE_ENV !== "test") app.use(logger())
+
+/*
+ * First in the chain, ahead of everything that can refuse a request.
+ *
+ * The public error envelope promises a `requestId` on every refusal, and the
+ * refusals that most need to be traceable — a 401, a 429, a malformed body —
+ * are raised by middleware that never reaches a handler. Resolving the id
+ * before any of them is what makes the promise true rather than usually true.
+ */
+app.use("*", requestId)
 /**
  * CORS.
  *
@@ -569,19 +550,62 @@ if (process.env.NODE_ENV !== "test") app.use(logger())
  * named here, and `credentials: true` is what lets Clerk's session cookie reach
  * the API from the web app's origin.
  */
-app.use(
-  "/api/*",
-  cors({
-    origin: config.corsOrigin,
-    allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key", TENANT_HEADER],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    exposeHeaders: ["WWW-Authenticate"],
-    credentials: config.corsOrigin !== "*",
-    maxAge: 600,
-  }),
+const corsPolicy = cors({
+  origin: config.corsOrigin,
+  allowHeaders: [
+    "Content-Type",
+    "Authorization",
+    "Idempotency-Key",
+    "If-None-Match",
+    "Last-Event-ID",
+    REQUEST_ID_HEADER,
+    TENANT_HEADER,
+  ],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  /*
+   * A header a browser cannot read may as well not have been sent. Each of
+   * these is one a client is expected to act on: the rate-limit trio to pace
+   * itself, `ETag` to make the next read conditional, `Deprecation`/`Sunset` to
+   * notice a route going away, and the request id to quote in a bug report.
+   */
+  exposeHeaders: [
+    "WWW-Authenticate",
+    "ETag",
+    "Deprecation",
+    "Sunset",
+    "Link",
+    "Retry-After",
+    "X-RateLimit-Limit",
+    "X-RateLimit-Remaining",
+    "X-RateLimit-Reset",
+    REQUEST_ID_HEADER,
+  ],
+  credentials: config.corsOrigin !== "*",
+  maxAge: 600,
+})
+
+app.use("/api/*", corsPolicy)
+app.use("/v1/*", corsPolicy)
+
+app.notFound((c) =>
+  isPublicApi(c.req.path)
+    ? c.json(
+        { code: "not_found" as const, message: `No such endpoint: ${c.req.method} ${c.req.path}`, requestId: requestIdOf(c) },
+        404,
+      )
+    : c.json({ error: "Not found", path: c.req.path }, 404),
 )
 
-app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404))
+/**
+ * Which surface a request belongs to.
+ *
+ * A prefix test rather than a flag on the context, because the handlers below
+ * run for requests that never reached a route — a 404, or a throw from
+ * middleware — and there is no route to have set a flag.
+ */
+function isPublicApi(path: string): boolean {
+  return path === `/${API_VERSION}` || path.startsWith(`/${API_VERSION}/`)
+}
 
 /**
  * One place that turns a thrown value into a response.
@@ -597,10 +621,25 @@ app.notFound((c) => c.json({ error: "Not found", path: c.req.path }, 404))
  * reach a caller.
  */
 app.onError((error, c) => {
+  /*
+   * Two surfaces, two envelopes, one handler — and it has to be this handler.
+   *
+   * Hono's `compose` does not propagate a thrown value up the middleware chain:
+   * it calls `onError` at the throw site and returns the response. A `try/catch`
+   * middleware inside `/v1` would therefore never fire, and a sub-application's
+   * own `onError` is not carried over by `route()`. So the published envelope is
+   * rendered from here, by asking which surface the request was addressed to.
+   */
+  if (isPublicApi(c.req.path)) return renderV1Error(c, error)
+
   if (isAppError(error)) {
     return c.json(error.body(), error.status, error.headers())
   }
-  console.error("[server] unhandled error", error)
+  console.error("[server] unhandled error", {
+    requestId: requestIdOf(c),
+    path: c.req.path,
+    error: describeError(error),
+  })
   return c.json({ error: describeError(error), code: "internal_error" }, 500)
 })
 
@@ -639,10 +678,28 @@ app.get("/", (c) =>
       "DEL  /api/keys/:id": "revoke a key, effective immediately",
       "POST /api/webhooks/clerk": "Clerk -> Postgres identity sync (Svix-signed)",
     },
+    /**
+     * The versioned, documented surface — and the only one anybody outside this
+     * repository should write against. See `doc/api/versioning.md`.
+     */
+    api: {
+      version: API_VERSION,
+      base: `/${API_VERSION}`,
+      openapi: `/${API_VERSION}/openapi.json`,
+    },
   }),
 )
 
-const routes = app.route("/api", api)
+/*
+ * Two surfaces, mounted side by side.
+ *
+ * `/api` is first-party: the web app and the TUI ship with the server, so their
+ * contract can change in the same commit. `/v1` is the product — versioned,
+ * documented by an OpenAPI document generated from these same Zod schemas, and
+ * guarded in CI against breaking changes. See `v1/app.ts` for why the public
+ * surface is deliberately narrower than the internal one.
+ */
+const routes = app.route("/api", api).route("/v1", v1)
 
 export type AppType = typeof routes
 export { app }

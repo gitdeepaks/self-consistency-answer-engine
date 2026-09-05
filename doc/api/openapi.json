@@ -1,0 +1,4119 @@
+{
+  "components": {
+    "parameters": {},
+    "schemas": {
+      "CancelResult": {
+        "properties": {
+          "canceled": {
+            "type": "boolean"
+          },
+          "run": {
+            "$ref": "#/components/schemas/Run"
+          }
+        },
+        "required": [
+          "run",
+          "canceled"
+        ],
+        "type": "object"
+      },
+      "CancelRunRequest": {
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateRunRequest": {
+        "properties": {
+          "prompt": {
+            "maxLength": 8000,
+            "minLength": 3,
+            "type": "string"
+          },
+          "providers": {
+            "items": {
+              "enum": [
+                "openai",
+                "anthropic",
+                "google"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "temperature": {
+            "maximum": 2,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "CreateShareRequest": {
+        "properties": {
+          "expiresInDays": {
+            "maximum": 365,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "label": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateWebhookEndpointRequest": {
+        "properties": {
+          "description": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "eventTypes": {
+            "items": {
+              "enum": [
+                "run.completed",
+                "run.failed",
+                "quota.exceeded"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "url": {
+            "format": "uri",
+            "maxLength": 2000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "Deleted": {
+        "properties": {
+          "deleted": {
+            "enum": [
+              true
+            ],
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted",
+          "id"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "code": {
+            "enum": [
+              "validation_failed",
+              "unauthorized",
+              "forbidden",
+              "not_found",
+              "conflict",
+              "quota_exceeded",
+              "rate_limited",
+              "payment_required",
+              "feature_unavailable",
+              "budget_exhausted",
+              "provider_unavailable",
+              "not_configured",
+              "internal_error"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "properties": {
+              "billing": {
+                "properties": {
+                  "graceEndsAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "enum": [
+                      "full",
+                      "read-only"
+                    ],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": [
+                      "payment_past_due",
+                      "subscription_canceled",
+                      "subscription_paused",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode",
+                  "reason",
+                  "graceEndsAt",
+                  "message"
+                ],
+                "type": "object"
+              },
+              "feature": {
+                "type": "string"
+              },
+              "fields": {
+                "items": {
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "killSwitch": {
+                "properties": {
+                  "engaged": {
+                    "type": "boolean"
+                  },
+                  "engagedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "releasedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "scope": {
+                    "enum": [
+                      "global.spend"
+                    ],
+                    "type": "string"
+                  },
+                  "updatedAt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "scope",
+                  "engaged",
+                  "reason",
+                  "engagedAt",
+                  "releasedAt",
+                  "updatedAt"
+                ],
+                "type": "object"
+              },
+              "quota": {
+                "properties": {
+                  "ceiling": {
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "limit": {
+                    "enum": [
+                      "monthly_runs",
+                      "monthly_tokens",
+                      "monthly_cost",
+                      "concurrent_runs"
+                    ],
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "plan": {
+                    "enum": [
+                      "free",
+                      "pro",
+                      "team",
+                      "enterprise"
+                    ],
+                    "type": "string"
+                  },
+                  "remaining": {
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "resetAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "upgradeTo": {
+                    "enum": [
+                      "free",
+                      "pro",
+                      "team",
+                      "enterprise",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "used": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "used",
+                  "ceiling",
+                  "remaining",
+                  "resetAt",
+                  "plan",
+                  "upgradeTo",
+                  "message"
+                ],
+                "type": "object"
+              },
+              "rateLimit": {
+                "properties": {
+                  "bucket": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  },
+                  "remaining": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "resetAt": {
+                    "type": "string"
+                  },
+                  "retryAfterSeconds": {
+                    "exclusiveMinimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bucket",
+                  "limit",
+                  "remaining",
+                  "resetAt",
+                  "retryAfterSeconds"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "Health": {
+        "properties": {
+          "ok": {
+            "enum": [
+              true
+            ],
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "service",
+          "time"
+        ],
+        "type": "object"
+      },
+      "ProviderHealth": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "color": {
+            "type": "string"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "enum": [
+              "openai",
+              "anthropic",
+              "google"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "route": {
+            "enum": [
+              "direct",
+              "gateway",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "model",
+          "color",
+          "available",
+          "route",
+          "hint"
+        ],
+        "type": "object"
+      },
+      "ProviderList": {
+        "properties": {
+          "evaluator": {
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "color": {
+                "type": "string"
+              },
+              "hint": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "enum": [
+                  "openai",
+                  "anthropic",
+                  "google"
+                ],
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "evaluator"
+                ],
+                "type": "string"
+              },
+              "route": {
+                "enum": [
+                  "direct",
+                  "gateway",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "model",
+              "color",
+              "available",
+              "route",
+              "hint",
+              "role"
+            ],
+            "type": "object"
+          },
+          "panel": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHealth"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "panel",
+          "evaluator"
+        ],
+        "type": "object"
+      },
+      "Run": {
+        "properties": {
+          "canceledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidates": {
+            "items": {
+              "properties": {
+                "attempts": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "content": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "inputTokens": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "latencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "outputTokens": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "enum": [
+                    "openai",
+                    "anthropic",
+                    "google"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "PENDING",
+                    "RUNNING",
+                    "OK",
+                    "ERROR",
+                    "SKIPPED",
+                    "CANCELED"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "provider",
+                "label",
+                "model",
+                "status",
+                "content",
+                "error",
+                "latencyMs",
+                "inputTokens",
+                "outputTokens",
+                "attempts"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdByUserId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deadlineAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "QUEUED",
+              "FANNING_OUT",
+              "SYNTHESIZING",
+              "COMPLETE",
+              "FAILED",
+              "CANCELED"
+            ],
+            "type": "string"
+          },
+          "synthesis": {
+            "properties": {
+              "agreements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "disagreements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "finalAnswer": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "inputTokens": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "latencyMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "outputTokens": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reviews": {
+                "items": {
+                  "properties": {
+                    "provider": {
+                      "enum": [
+                        "openai",
+                        "anthropic",
+                        "google"
+                      ],
+                      "type": "string"
+                    },
+                    "score": {
+                      "description": "Overall quality of this answer, 0-10.",
+                      "maximum": 10,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "strengths": {
+                      "description": "What this answer got right that others missed.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "weaknesses": {
+                      "description": "Errors, omissions or weak reasoning.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "score",
+                    "strengths",
+                    "weaknesses"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "model",
+              "finalAnswer",
+              "agreements",
+              "disagreements",
+              "reviews",
+              "confidence",
+              "latencyMs",
+              "inputTokens",
+              "outputTokens"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "totalLatencyMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "createdByUserId",
+          "prompt",
+          "status",
+          "error",
+          "totalLatencyMs",
+          "temperature",
+          "createdAt",
+          "completedAt",
+          "deadlineAt",
+          "canceledAt",
+          "tags",
+          "candidates",
+          "synthesis"
+        ],
+        "type": "object"
+      },
+      "RunPage": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "RunShare": {
+        "properties": {
+          "createdAt": {
+            "type": "string"
+          },
+          "createdByUserId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastViewedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 120,
+            "pattern": "^sce_share_([A-Za-z0-9_-]{32})$",
+            "type": "string"
+          },
+          "viewCount": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "runId",
+          "token",
+          "label",
+          "createdByUserId",
+          "createdAt",
+          "expiresAt",
+          "revokedAt",
+          "viewCount",
+          "lastViewedAt"
+        ],
+        "type": "object"
+      },
+      "RunSharePage": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/RunShare"
+            },
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "canceledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidateCount": {
+            "type": "number"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "createdByUserId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deadlineAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasSynthesis": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "QUEUED",
+              "FANNING_OUT",
+              "SYNTHESIZING",
+              "COMPLETE",
+              "FAILED",
+              "CANCELED"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "totalLatencyMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "createdByUserId",
+          "prompt",
+          "status",
+          "error",
+          "totalLatencyMs",
+          "temperature",
+          "createdAt",
+          "completedAt",
+          "deadlineAt",
+          "canceledAt",
+          "tags",
+          "candidateCount",
+          "hasSynthesis",
+          "confidence"
+        ],
+        "type": "object"
+      },
+      "SetTagsRequest": {
+        "properties": {
+          "tags": {
+            "items": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9._-]*$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          }
+        },
+        "required": [
+          "tags"
+        ],
+        "type": "object"
+      },
+      "UsageSummary": {
+        "properties": {
+          "access": {
+            "properties": {
+              "graceEndsAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "mode": {
+                "enum": [
+                  "full",
+                  "read-only"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "payment_past_due",
+                  "subscription_canceled",
+                  "subscription_paused",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "mode",
+              "reason",
+              "graceEndsAt",
+              "message"
+            ],
+            "type": "object"
+          },
+          "entitlements": {
+            "items": {
+              "enum": [
+                "panel.custom",
+                "api.keys",
+                "usage.daily",
+                "webhooks",
+                "priority.queue"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "period": {
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "plan": {
+            "enum": [
+              "free",
+              "pro",
+              "team",
+              "enterprise"
+            ],
+            "type": "string"
+          },
+          "quotas": {
+            "items": {
+              "properties": {
+                "ceiling": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "limit": {
+                  "enum": [
+                    "monthly_runs",
+                    "monthly_tokens",
+                    "monthly_cost",
+                    "concurrent_runs"
+                  ],
+                  "type": "string"
+                },
+                "remaining": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "resetAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "used": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "limit",
+                "used",
+                "ceiling",
+                "remaining",
+                "resetAt"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "subscription": {
+            "properties": {
+              "cancelAtPeriodEnd": {
+                "type": "boolean"
+              },
+              "currentPeriodEnd": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "currentPeriodStart": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "externalCustomerId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "externalSubscriptionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "graceEndsAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "plan": {
+                "enum": [
+                  "free",
+                  "pro",
+                  "team",
+                  "enterprise"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "ACTIVE",
+                  "TRIALING",
+                  "PAST_DUE",
+                  "CANCELED",
+                  "PAUSED"
+                ],
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan",
+              "status",
+              "currentPeriodStart",
+              "currentPeriodEnd",
+              "cancelAtPeriodEnd",
+              "graceEndsAt",
+              "externalCustomerId",
+              "externalSubscriptionId",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          "usage": {
+            "properties": {
+              "calls": {
+                "type": "number"
+              },
+              "costMicroCents": {
+                "type": "number"
+              },
+              "hasUnpricedCalls": {
+                "type": "boolean"
+              },
+              "hasUnverifiedPricing": {
+                "type": "boolean"
+              },
+              "inputTokens": {
+                "type": "number"
+              },
+              "outputTokens": {
+                "type": "number"
+              },
+              "runs": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "runs",
+              "calls",
+              "inputTokens",
+              "outputTokens",
+              "costMicroCents",
+              "hasUnpricedCalls",
+              "hasUnverifiedPricing"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "usage",
+          "period",
+          "plan",
+          "quotas",
+          "entitlements",
+          "subscription",
+          "access"
+        ],
+        "type": "object"
+      },
+      "VersionIndex": {
+        "properties": {
+          "documentationUrl": {
+            "type": "string"
+          },
+          "openapiUrl": {
+            "type": "string"
+          },
+          "sunset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "sunset",
+          "documentationUrl",
+          "openapiUrl"
+        ],
+        "type": "object"
+      },
+      "WebhookDelivery": {
+        "properties": {
+          "attempts": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "deliveredAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpointId": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "eventType": {
+            "enum": [
+              "run.completed",
+              "run.failed",
+              "quota.exceeded"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "responseStatus": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "DELIVERED",
+              "FAILED"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "endpointId",
+          "eventId",
+          "eventType",
+          "status",
+          "attempts",
+          "responseStatus",
+          "lastError",
+          "deliveredAt",
+          "nextAttemptAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "WebhookDeliveryPage": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/WebhookDelivery"
+            },
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "WebhookEndpoint": {
+        "properties": {
+          "consecutiveFailures": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disabledAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disabledReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "eventTypes": {
+            "items": {
+              "enum": [
+                "run.completed",
+                "run.failed",
+                "quota.exceeded"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "description",
+          "eventTypes",
+          "disabledAt",
+          "disabledReason",
+          "consecutiveFailures",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "WebhookEndpointCreated": {
+        "properties": {
+          "endpoint": {
+            "properties": {
+              "consecutiveFailures": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "disabledAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "disabledReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "eventTypes": {
+                "items": {
+                  "enum": [
+                    "run.completed",
+                    "run.failed",
+                    "quota.exceeded"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "url": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "url",
+              "description",
+              "eventTypes",
+              "disabledAt",
+              "disabledReason",
+              "consecutiveFailures",
+              "createdAt",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "WebhookEndpointPage": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/WebhookEndpoint"
+            },
+            "type": "array"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data",
+          "nextCursor",
+          "hasMore"
+        ],
+        "type": "object"
+      },
+      "WebhookEvent": {
+        "oneOf": [
+          {
+            "properties": {
+              "apiVersion": {
+                "enum": [
+                  "v1"
+                ],
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "data": {
+                "properties": {
+                  "run": {
+                    "properties": {
+                      "canceledAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "candidateCount": {
+                        "type": "number"
+                      },
+                      "completedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "confidence": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "createdAt": {
+                        "type": "string"
+                      },
+                      "createdByUserId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "deadlineAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "hasSynthesis": {
+                        "type": "boolean"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "QUEUED",
+                          "FANNING_OUT",
+                          "SYNTHESIZING",
+                          "COMPLETE",
+                          "FAILED",
+                          "CANCELED"
+                        ],
+                        "type": "string"
+                      },
+                      "tags": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "temperature": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "totalLatencyMs": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "createdByUserId",
+                      "prompt",
+                      "status",
+                      "error",
+                      "totalLatencyMs",
+                      "temperature",
+                      "createdAt",
+                      "completedAt",
+                      "deadlineAt",
+                      "canceledAt",
+                      "tags",
+                      "candidateCount",
+                      "hasSynthesis",
+                      "confidence"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "run"
+                ],
+                "type": "object"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "run.completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "apiVersion",
+              "createdAt",
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apiVersion": {
+                "enum": [
+                  "v1"
+                ],
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "data": {
+                "properties": {
+                  "error": {
+                    "type": "string"
+                  },
+                  "run": {
+                    "properties": {
+                      "canceledAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "candidateCount": {
+                        "type": "number"
+                      },
+                      "completedAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "confidence": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "createdAt": {
+                        "type": "string"
+                      },
+                      "createdByUserId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "deadlineAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "hasSynthesis": {
+                        "type": "boolean"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "PENDING",
+                          "QUEUED",
+                          "FANNING_OUT",
+                          "SYNTHESIZING",
+                          "COMPLETE",
+                          "FAILED",
+                          "CANCELED"
+                        ],
+                        "type": "string"
+                      },
+                      "tags": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "temperature": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "totalLatencyMs": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "createdByUserId",
+                      "prompt",
+                      "status",
+                      "error",
+                      "totalLatencyMs",
+                      "temperature",
+                      "createdAt",
+                      "completedAt",
+                      "deadlineAt",
+                      "canceledAt",
+                      "tags",
+                      "candidateCount",
+                      "hasSynthesis",
+                      "confidence"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "run",
+                  "error"
+                ],
+                "type": "object"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "run.failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "apiVersion",
+              "createdAt",
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "apiVersion": {
+                "enum": [
+                  "v1"
+                ],
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "data": {
+                "properties": {
+                  "plan": {
+                    "enum": [
+                      "free",
+                      "pro",
+                      "team",
+                      "enterprise"
+                    ],
+                    "type": "string"
+                  },
+                  "quota": {
+                    "properties": {
+                      "ceiling": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "limit": {
+                        "enum": [
+                          "monthly_runs",
+                          "monthly_tokens",
+                          "monthly_cost",
+                          "concurrent_runs"
+                        ],
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "plan": {
+                        "enum": [
+                          "free",
+                          "pro",
+                          "team",
+                          "enterprise"
+                        ],
+                        "type": "string"
+                      },
+                      "remaining": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "resetAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "upgradeTo": {
+                        "enum": [
+                          "free",
+                          "pro",
+                          "team",
+                          "enterprise",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "used": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "limit",
+                      "used",
+                      "ceiling",
+                      "remaining",
+                      "resetAt",
+                      "plan",
+                      "upgradeTo",
+                      "message"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "quota",
+                  "plan"
+                ],
+                "type": "object"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "quota.exceeded"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "apiVersion",
+              "createdAt",
+              "type",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "An API key: `Authorization: Bearer sce_live_…`. A browser session token from Clerk is also accepted, which is what the web app's playground uses.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "name": "API support",
+      "url": "https://github.com/gitdeepaks/self-consistency-answer-engine"
+    },
+    "description": "Ask several frontier models the same question, then have an evaluator merge their answers into one — with the agreements, the disagreements and a confidence score attached.\n\n**Authentication.** Every route takes `Authorization: Bearer sce_live_…`. Create a key in the web app under Settings → API keys. A key carries scopes; a request that needs one the key lacks is refused with 403 and `code: \"forbidden\"`.\n\n**Errors.** Every refusal is `{ code, message, details?, requestId }`. Branch on `code`, never on the HTTP status alone — 429 covers both a plan ceiling and a per-window request budget, and `details` tells them apart.\n\n**Retries.** Send an `Idempotency-Key` on every POST. A retry carrying the same key replays the original response instead of performing the write twice.\n\n**Runs are asynchronous.** `POST /v1/runs` returns as soon as the run is queued. Follow it with the SSE stream, or register a webhook and be told.",
+    "license": {
+      "name": "MIT"
+    },
+    "title": "Self-Consistency Answer Engine API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "description": "What this version is, where it is documented, and when it stops answering.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionIndex"
+                }
+              }
+            },
+            "description": "This version."
+          }
+        },
+        "summary": "Version index",
+        "tags": [
+          "Meta"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Answers without touching the database, the queue or the identity provider, so it reports on *this process* rather than on everything behind it.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Alive."
+          }
+        },
+        "summary": "Liveness",
+        "tags": [
+          "Meta"
+        ]
+      }
+    },
+    "/providers": {
+      "get": {
+        "description": "The model panel a run fans out to, and whether each member is reachable from this deployment. A member with `available: false` is seeded as a SKIPPED candidate rather than silently dropped, so the panel you asked for is always visible in the run you get back.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderList"
+                }
+              }
+            },
+            "description": "The panel and the evaluator."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Panel availability",
+        "tags": [
+          "Account"
+        ]
+      }
+    },
+    "/runs": {
+      "get": {
+        "description": "Newest first, cursor-paginated. Pass the previous page's `nextCursor` back as `cursor`; the value is opaque and must not be constructed by hand.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "providers",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tags",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "minConfidence",
+            "required": false,
+            "schema": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            },
+            "description": "A page of runs."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "List runs",
+        "tags": [
+          "Runs"
+        ]
+      },
+      "post": {
+        "description": "Fans a prompt out across the model panel and returns immediately. The run is produced asynchronously; follow it with GET /v1/runs/{runId}/events or a run.completed webhook.\n\nSend an Idempotency-Key: a retry carrying the same key returns the original run with 200 rather than fanning out a second, identically expensive panel.",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            },
+            "description": "An earlier request with the same Idempotency-Key created this run."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            },
+            "description": "The run was created."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The subscription cannot fund new work."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The install-wide spend guard is engaged."
+          }
+        },
+        "summary": "Start a run",
+        "tags": [
+          "Runs"
+        ]
+      }
+    },
+    "/runs/{runId}": {
+      "delete": {
+        "description": "Permanent. Usage records survive the deletion so billing stays correct, but they no longer reference the run.",
+        "parameters": [
+          {
+            "description": "The run's id, as returned by POST /v1/runs.",
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "description": "The run's id, as returned by POST /v1/runs.",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            },
+            "description": "The run was deleted."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Delete a run",
+        "tags": [
+          "Runs"
+        ]
+      },
+      "get": {
+        "description": "Returns the run with every candidate and the synthesis.\n\nResponses carry an `ETag`. A finished run never changes, so a client polling one should send the tag back as `If-None-Match` and get a 304 with no body.",
+        "parameters": [
+          {
+            "description": "The run's id, as returned by POST /v1/runs.",
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "description": "The run's id, as returned by POST /v1/runs.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            },
+            "description": "The run."
+          },
+          "304": {
+            "description": "The run is unchanged since the supplied ETag."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Fetch a run",
+        "tags": [
+          "Runs"
+        ]
+      }
+    },
+    "/runs/{runId}/cancel": {
+      "post": {
+        "description": "Stops a run in flight so it stops spending tokens. Cancelling a run that has already finished is not an error: `canceled` is false and the run is returned unchanged.",
+        "parameters": [
+          {
+            "description": "The run's id, as returned by POST /v1/runs.",
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "description": "The run's id, as returned by POST /v1/runs.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRunRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
+                }
+              }
+            },
+            "description": "The run's state after the request."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Cancel a run",
+        "tags": [
+          "Runs"
+        ]
+      }
+    },
+    "/runs/{runId}/events": {
+      "get": {
+        "description": "A Server-Sent Events stream of the run's lifecycle. Each frame's `data` is a RunEvent and its `id` is the durable sequence number.\n\nResume after a disconnect by sending the last id you saw as `Last-Event-ID` (EventSource does this by itself) or as `?afterSeq=`. Events with no id are ephemeral — token deltas — and are not replayed.\n\nThe stream closes after `run.completed`, `run.failed` or `run.canceled`. A `ping` event arrives periodically to keep intermediaries from closing an idle connection.",
+        "parameters": [
+          {
+            "description": "The run's id, as returned by POST /v1/runs.",
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "description": "The run's id, as returned by POST /v1/runs.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resume after this durable sequence number.",
+            "in": "query",
+            "name": "afterSeq",
+            "required": false,
+            "schema": {
+              "description": "Resume after this durable sequence number.",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "last-event-id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The event stream."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stream a run's progress",
+        "tags": [
+          "Runs"
+        ]
+      }
+    },
+    "/runs/{runId}/shares": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSharePage"
+                }
+              }
+            },
+            "description": "Every link published for this run."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "List a run's links",
+        "tags": [
+          "Shares"
+        ]
+      },
+      "post": {
+        "description": "Mints a public, read-only link to a finished run. The link carries the synthesised answer and nothing that identifies the person, the workspace or the spend behind it.\n\nThe token is returned once here and is readable from the link list afterwards — it is a capability, not a secret to be hashed. Revoke it with DELETE /v1/shares/{shareId}, which takes effect on the next visit.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateShareRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunShare"
+                }
+              }
+            },
+            "description": "The link."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The run has no synthesised answer, so there is nothing to publish."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Publish a run",
+        "tags": [
+          "Shares"
+        ]
+      }
+    },
+    "/runs/{runId}/tags": {
+      "put": {
+        "description": "Wholesale rather than add/remove: the list you send becomes the run's complete tag set. Sending an empty array removes every tag.",
+        "parameters": [
+          {
+            "description": "The run's id, as returned by POST /v1/runs.",
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "description": "The run's id, as returned by POST /v1/runs.",
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTagsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "tags": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "tags"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The run's tags after the change."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such run in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Replace a run's tags",
+        "tags": [
+          "Runs"
+        ]
+      }
+    },
+    "/shares": {
+      "get": {
+        "description": "The 'what have we made public?' audit for the whole workspace.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSharePage"
+                }
+              }
+            },
+            "description": "A page of links."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "List every published link",
+        "tags": [
+          "Shares"
+        ]
+      }
+    },
+    "/shares/{shareId}": {
+      "delete": {
+        "description": "Effective immediately — the link is resolved from the database on every visit, so there is no cache to wait out. Revoking a link that was already revoked succeeds as well: the caller's intent is satisfied either way.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shareId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            },
+            "description": "The link is revoked."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Revoke a link",
+        "tags": [
+          "Shares"
+        ]
+      }
+    },
+    "/usage": {
+      "get": {
+        "description": "This calendar month's spend, the plan's ceilings and how close each one is. Poll this rather than discovering a limit by being refused at it — every quota here is the same figure the pre-flight check on POST /v1/runs consults.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummary"
+                }
+              }
+            },
+            "description": "Usage, quotas and entitlements for the calling workspace."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Usage and limits",
+        "tags": [
+          "Account"
+        ]
+      }
+    },
+    "/webhooks/deliveries": {
+      "get": {
+        "description": "Every attempt made to every endpoint in this workspace, newest first — with the status the receiver returned and the first bytes of its response body.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endpointId",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "PENDING",
+                "DELIVERED",
+                "FAILED"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveryPage"
+                }
+              }
+            },
+            "description": "A page of deliveries."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "List deliveries",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "/webhooks/deliveries/{deliveryId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deliveryId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDelivery"
+                }
+              }
+            },
+            "description": "The delivery."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such delivery in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Fetch a delivery",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "/webhooks/deliveries/{deliveryId}/replay": {
+      "post": {
+        "description": "Re-sends the original event, bytes unchanged, with its original `webhook-id`. A receiver that already handled it should deduplicate on that id — this is a genuine redelivery, not a new event that happens to look similar.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deliveryId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDelivery"
+                }
+              }
+            },
+            "description": "The delivery is queued for another attempt."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such delivery in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Replay a delivery",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "/webhooks/endpoints": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpointPage"
+                }
+              }
+            },
+            "description": "A page of endpoints. Signing secrets are never included."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "List endpoints",
+        "tags": [
+          "Webhooks"
+        ]
+      },
+      "post": {
+        "description": "Registers a URL to receive signed events.\n\nThe response carries a `whsec_…` signing secret **once**. Store it: it is never returned again, and verifying it on every delivery is the only thing that distinguishes an event from us from a POST by somebody who read these docs. Rotate by registering a new endpoint and deleting the old one.",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWebhookEndpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpointCreated"
+                }
+              }
+            },
+            "description": "The endpoint, and its signing secret."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Register an endpoint",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "/webhooks/endpoints/{endpointId}": {
+      "delete": {
+        "description": "Permanent, and takes its delivery history with it. Effective immediately.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "endpointId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            },
+            "description": "The endpoint is gone."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Delete an endpoint",
+        "tags": [
+          "Webhooks"
+        ]
+      },
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "endpointId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            },
+            "description": "The endpoint."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such endpoint in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Fetch an endpoint",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    },
+    "/webhooks/endpoints/{endpointId}/enable": {
+      "post": {
+        "description": "An endpoint is taken out of rotation after twenty consecutive failed deliveries. Re-enabling is explicit rather than automatic: something at the far end is broken, and resuming on a timer would only resume hammering it. Deliveries that failed while it was disabled can be replayed from the delivery log.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "endpointId",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            },
+            "description": "The endpoint, back in rotation."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request did not match the expected shape."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that is expired or revoked."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The credential lacks the scope or role this route needs."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such endpoint in this workspace."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A plan ceiling or a per-window request budget was reached."
+          }
+        },
+        "summary": "Re-enable a disabled endpoint",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "This deployment",
+      "url": "/v1"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Version discovery and liveness.",
+      "name": "Meta"
+    },
+    {
+      "description": "Ask a panel a question, and follow the answer.",
+      "name": "Runs"
+    },
+    {
+      "description": "Publish a finished run as a public link.",
+      "name": "Shares"
+    },
+    {
+      "description": "Be told when a run finishes, instead of polling.",
+      "name": "Webhooks"
+    },
+    {
+      "description": "Panel availability, usage and plan limits.",
+      "name": "Account"
+    }
+  ],
+  "webhooks": {
+    "quota.exceeded": {
+      "post": {
+        "description": "Sent to every endpoint subscribed to `quota.exceeded`.\n\nVerify before you parse: the signature covers the raw body, and re-serialising a parsed object changes the bytes. Compare `webhook-signature` against an HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}` keyed with the endpoint's `whsec_…` secret — or call `verifyWebhookSignature` from `@sce/sdk`, which does exactly that.\n\nAnswer 2xx quickly and do the work afterwards: a delivery that takes longer than ten seconds is treated as failed and retried.\n\nDeliveries are at-least-once. Deduplicate on `webhook-id`.",
+        "parameters": [
+          {
+            "description": "Unique per event; stable across retries.",
+            "in": "header",
+            "name": "webhook-id",
+            "required": true,
+            "schema": {
+              "description": "Unique per event; stable across retries.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix seconds when the attempt was signed.",
+            "in": "header",
+            "name": "webhook-timestamp",
+            "required": true,
+            "schema": {
+              "description": "Unix seconds when the attempt was signed.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Space-delimited `v1,<base64>` signatures.",
+            "in": "header",
+            "name": "webhook-signature",
+            "required": true,
+            "schema": {
+              "description": "Space-delimited `v1,<base64>` signatures.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged. Any 2xx settles the delivery."
+          },
+          "500": {
+            "description": "Anything else is retried with exponential backoff."
+          }
+        },
+        "summary": "quota.exceeded delivered to a registered endpoint"
+      }
+    },
+    "run.completed": {
+      "post": {
+        "description": "Sent to every endpoint subscribed to `run.completed`.\n\nVerify before you parse: the signature covers the raw body, and re-serialising a parsed object changes the bytes. Compare `webhook-signature` against an HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}` keyed with the endpoint's `whsec_…` secret — or call `verifyWebhookSignature` from `@sce/sdk`, which does exactly that.\n\nAnswer 2xx quickly and do the work afterwards: a delivery that takes longer than ten seconds is treated as failed and retried.\n\nDeliveries are at-least-once. Deduplicate on `webhook-id`.",
+        "parameters": [
+          {
+            "description": "Unique per event; stable across retries.",
+            "in": "header",
+            "name": "webhook-id",
+            "required": true,
+            "schema": {
+              "description": "Unique per event; stable across retries.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix seconds when the attempt was signed.",
+            "in": "header",
+            "name": "webhook-timestamp",
+            "required": true,
+            "schema": {
+              "description": "Unix seconds when the attempt was signed.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Space-delimited `v1,<base64>` signatures.",
+            "in": "header",
+            "name": "webhook-signature",
+            "required": true,
+            "schema": {
+              "description": "Space-delimited `v1,<base64>` signatures.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged. Any 2xx settles the delivery."
+          },
+          "500": {
+            "description": "Anything else is retried with exponential backoff."
+          }
+        },
+        "summary": "run.completed delivered to a registered endpoint"
+      }
+    },
+    "run.failed": {
+      "post": {
+        "description": "Sent to every endpoint subscribed to `run.failed`.\n\nVerify before you parse: the signature covers the raw body, and re-serialising a parsed object changes the bytes. Compare `webhook-signature` against an HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}` keyed with the endpoint's `whsec_…` secret — or call `verifyWebhookSignature` from `@sce/sdk`, which does exactly that.\n\nAnswer 2xx quickly and do the work afterwards: a delivery that takes longer than ten seconds is treated as failed and retried.\n\nDeliveries are at-least-once. Deduplicate on `webhook-id`.",
+        "parameters": [
+          {
+            "description": "Unique per event; stable across retries.",
+            "in": "header",
+            "name": "webhook-id",
+            "required": true,
+            "schema": {
+              "description": "Unique per event; stable across retries.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unix seconds when the attempt was signed.",
+            "in": "header",
+            "name": "webhook-timestamp",
+            "required": true,
+            "schema": {
+              "description": "Unix seconds when the attempt was signed.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Space-delimited `v1,<base64>` signatures.",
+            "in": "header",
+            "name": "webhook-signature",
+            "required": true,
+            "schema": {
+              "description": "Space-delimited `v1,<base64>` signatures.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged. Any 2xx settles the delivery."
+          },
+          "500": {
+            "description": "Anything else is retried with exponential backoff."
+          }
+        },
+        "summary": "run.failed delivered to a registered endpoint"
+      }
+    }
+  }
+}
