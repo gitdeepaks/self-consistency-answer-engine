@@ -98,6 +98,9 @@ enum AuditAction {
   RUN_SHARED
   RUN_SHARE_REVOKED
   DLQ_REPLAYED
+  WEBHOOK_ENDPOINT_CREATED
+  WEBHOOK_ENDPOINT_DELETED
+  WEBHOOK_REPLAYED
 }
 
 /// Which leg of a run a metered model call belongs to.
@@ -170,6 +173,9 @@ model Tenant {
   subscription Subscription?
   shares       RunShare[]
   feedback     RunFeedback[]
+  webhooks     WebhookEndpoint[]
+  dispatches   WebhookDispatch[]
+  idempotency  IdempotencyRecord[]
 
   @@index([createdAt])
 }
@@ -184,11 +190,12 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships    Membership[]
-  createdRuns    Run[]         @relation("RunCreatedBy")
-  createdApiKeys ApiKey[]      @relation("ApiKeyCreatedBy")
-  createdShares  RunShare[]    @relation("RunShareCreatedBy")
-  feedback       RunFeedback[] @relation("RunFeedbackAuthor")
+  memberships     Membership[]
+  createdRuns     Run[]             @relation("RunCreatedBy")
+  createdApiKeys  ApiKey[]          @relation("ApiKeyCreatedBy")
+  createdShares   RunShare[]        @relation("RunShareCreatedBy")
+  feedback        RunFeedback[]     @relation("RunFeedbackAuthor")
+  createdWebhooks WebhookEndpoint[] @relation("WebhookEndpointCreatedBy")
 }
 
 model Membership {
@@ -734,4 +741,154 @@ model WebhookDelivery {
   receivedAt DateTime @default(now())
 
   @@index([receivedAt])
+}
+
+/**
+ * ------------------------------------------------- the public API surface
+ */
+
+/// Where an outbound delivery got to.
+///
+/// SCREAMING_SNAKE to match `webhookDeliveryStatusSchema` in @sce/shared with
+/// no mapping layer, like every other status enum in this file.
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+/// Where an idempotent request got to.
+enum IdempotencyStatus {
+  IN_FLIGHT
+  COMPLETED
+}
+
+/// A customer's server, subscribed to events from this workspace.
+///
+/// Not to be confused with `WebhookDelivery` above, which deduplicates
+/// *inbound* Clerk deliveries. This is the other direction.
+///
+/// `secret` is stored in plaintext, which is a deliberate exception to the rule
+/// that governs `ApiKey`. HMAC is symmetric: signing a delivery needs the key
+/// material, so there is nothing to hash it into. What bounds the damage is
+/// that the secret authorises nothing — it proves a payload came from us and
+/// grants access to no data at all — and that rotating it is one delete and one
+/// create. See `webhook.ts` in @sce/shared for the argument in full.
+model WebhookEndpoint {
+  id              String  @id @default(cuid())
+  tenantId        String
+  /// The person who registered it. Null for one created by a key-bound
+  /// credential, which has no user behind it.
+  createdByUserId String?
+
+  url         String
+  description String?
+  /// `whsec_…`. Returned once, by the request that created the endpoint.
+  secret      String
+
+  /// `WebhookEventType[]` from @sce/shared. `String[]` rather than an enum
+  /// array because the values contain dots, which Postgres enum labels cannot.
+  /// Parsed on the way out; an unreadable entry is dropped, which fails closed.
+  eventTypes String[]
+
+  /// Set when consecutive failures took the endpoint out of rotation. A
+  /// timestamp rather than a boolean, because "since when" is the first thing
+  /// anybody asks and the answer is otherwise only in a log.
+  disabledAt          DateTime?
+  disabledReason      String?
+  /// Reset to zero by any successful delivery, so a healthy endpoint that fails
+  /// once a week never accumulates its way to disabled.
+  consecutiveFailures Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy  User?             @relation("WebhookEndpointCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  dispatches WebhookDispatch[]
+
+  @@index([tenantId, createdAt])
+  @@index([createdByUserId])
+}
+
+/// One event, addressed to one endpoint, and the history of trying to deliver it.
+///
+/// `payload` holds the **exact bytes** that were signed. Re-serialising the
+/// event at delivery time would produce a different string — key order and
+/// unicode escaping are not stable across builds — and the signature would then
+/// verify against nothing. Storing the bytes is also what makes a replay a
+/// genuine replay rather than a second, subtly different event.
+model WebhookDispatch {
+  id         String @id @default(cuid())
+  tenantId   String
+  endpointId String
+
+  /// `evt_…`, shared across every attempt. The receiver's deduplication key.
+  eventId   String
+  /// `WebhookEventType` from @sce/shared. Free-text for the same reason as
+  /// `RunEvent.type`: the dotted names are not valid Postgres enum labels.
+  eventType String
+  payload   String
+
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  /// HTTP status of the last attempt. Null when the request never completed.
+  responseStatus Int?
+  /// First bytes of the last response, or the transport error. Capped on write.
+  lastError      String?
+  deliveredAt    DateTime?
+  /// When the next attempt is due. Null once the delivery has settled.
+  nextAttemptAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  /// One delivery per event per endpoint. This is what makes emission itself
+  /// idempotent: a synthesis job redelivered by the queue tries to insert the
+  /// same pair and conflicts instead of sending a second copy.
+  @@unique([endpointId, eventId])
+  @@index([tenantId, createdAt])
+  @@index([endpointId, createdAt])
+  /// The sweeper's query: deliveries whose next attempt is due.
+  @@index([status, nextAttemptAt])
+}
+
+/// A remembered request, so a retry replays rather than repeats.
+///
+/// Scoped by `endpoint` — the method and path — as well as by key, because an
+/// idempotency key describes an *operation*: the same key sent to two different
+/// routes is two intentions, not a retry of one.
+model IdempotencyRecord {
+  id       String @id @default(cuid())
+  tenantId String
+
+  /// The caller's `Idempotency-Key` header, verbatim.
+  key         String
+  /// `POST /v1/runs`. Part of the uniqueness, not decoration.
+  endpoint    String
+  /// SHA-256 of method, path and body. A retry whose fingerprint differs is a
+  /// client bug, and is answered 409 rather than given the first response.
+  fingerprint String
+
+  status         IdempotencyStatus @default(IN_FLIGHT)
+  /// The stored response, replayed verbatim so a retry is indistinguishable
+  /// from the original. Null while the first request is still running, and for
+  /// a response too large to be worth storing.
+  responseStatus Int?
+  responseBody   String?
+
+  /// Swept after this. A key remembered forever turns a client's key reuse a
+  /// year later into a silent no-op.
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, endpoint, key])
+  @@index([expiresAt])
 }

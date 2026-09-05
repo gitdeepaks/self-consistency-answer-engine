@@ -12,12 +12,14 @@ import { fileURLToPath } from "node:url"
  * takes. Deliberate exceptions are listed here with a reason, so adding one is
  * a visible decision in the diff rather than an omission.
  *
- * Seven files are scanned. `repository.ts` holds the runs and everything hanging
+ * Nine files are scanned. `repository.ts` holds the runs and everything hanging
  * off them; `auth.ts` holds credentials and the audit trail; `metering.ts` holds
  * the counters quotas are decided from; `billing.ts` holds subscriptions and the
  * kill switch; `shares.ts` holds public links; `feedback.ts` holds human
- * verdicts; `admin.ts` is the operations console's cross-tenant reads, every one
- * of which is listed below with the reason it is allowed to span tenants.
+ * verdicts; `webhooks.ts` holds outbound webhook endpoints and their delivery log;
+ * `idempotency.ts` holds the records that make a retried POST safe; `admin.ts`
+ * is the operations console's cross-tenant reads, every one of which is listed
+ * below with the reason it is allowed to span tenants.
  * `tenancy.ts` is deliberately *not* scanned: it is the file that
  * creates tenants and memberships in the first place, so "filters by tenant" is
  * not a property it can have — it is the thing every other query's filter
@@ -141,6 +143,42 @@ const FILES: Scanned[] = [
       adminTenantRows: "the console's workspace list; takes an OperatorScope whose reason is typed at the call site",
       adminFindRun: "resolves a run without knowing its tenant; same OperatorScope",
       adminInstallCounts: "install-wide counters; same OperatorScope",
+    },
+  },
+  {
+    file: "webhooks.ts",
+    source: readFileSync(path.join(HERE, "webhooks.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "webhookDispatch.findMany":
+        "the outbox sweep, which spans the install by definition — it takes a scope whose " +
+        "reason has to be typed out at the call site, and returns ids only",
+      "webhookDispatch.deleteMany":
+        "the retention sweep, which spans the install by definition — it takes a scope whose " +
+        "reason has to be typed out at the call site",
+    },
+    exemptFunctions: {
+      listDueWebhookDeliveries:
+        "the outbox sweep reads due deliveries across every tenant; the cross-tenant intent " +
+        "is typed at the call site and each row carries its own tenant back",
+      pruneWebhookDeliveries:
+        "deletes settled deliveries past their retention window across every tenant; the " +
+        "cross-tenant intent is typed at the call site",
+    },
+  },
+  {
+    file: "idempotency.ts",
+    source: readFileSync(path.join(HERE, "idempotency.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "idempotencyRecord.deleteMany":
+        "one caller is tenant-scoped (releaseIdempotencyKey, whose filter names the tenant) " +
+        "and the other is the expiry sweep, which spans the install and says so",
+    },
+    exemptFunctions: {
+      sweepIdempotencyRecords:
+        "deletes expired records across every tenant; the cross-tenant intent is typed at " +
+        "the call site",
     },
   },
   {
