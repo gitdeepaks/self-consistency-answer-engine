@@ -8,7 +8,9 @@ import {
   MessageSquarePlus,
   Share2,
   ShieldAlert,
+  Terminal,
   Users,
+  Webhook,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -47,6 +49,8 @@ const DESTINATIONS: readonly Destination[] = [
   { href: "/usage", label: "Usage", Icon: BarChart3 },
   { href: "/team", label: "Team", Icon: Users },
   { href: "/settings/keys", label: "API keys", Icon: KeyRound },
+  { href: "/settings/webhooks", label: "Webhooks", Icon: Webhook },
+  { href: "/settings/playground", label: "Playground", Icon: Terminal },
   { href: "/admin", label: "Operations", Icon: ShieldAlert, operatorOnly: true },
 ]
 
