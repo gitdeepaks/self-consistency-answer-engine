@@ -37,6 +37,18 @@ import { ensureTenant } from "./tenancy.ts"
 const PREFIX = "test-metering"
 const MODEL = "test-metering-model"
 const NOW = new Date("2026-08-15T12:00:00.000Z")
+/**
+ * A moment inside `NOW`'s month.
+ *
+ * Every run below is stamped with an explicit `createdAt`, including the two
+ * that belong to "this month". Leaving those to the database default made the
+ * suite depend on the wall clock: `tenantQuotaSnapshot` counts `Run.createdAt`
+ * inside `monthWindow(NOW)`, so rows created at the real `now()` fell inside
+ * that window only while the machine's calendar happened to say August 2026,
+ * and the suite began failing on the 1st of September for reasons entirely
+ * unrelated to the code under test.
+ */
+const THIS_MONTH = new Date("2026-08-14T09:00:00.000Z")
 const LAST_MONTH = new Date("2026-07-20T09:00:00.000Z")
 
 /** $2 in, $10 out per million tokens — round numbers make the maths readable. */
@@ -70,15 +82,20 @@ beforeAll(async () => {
   })
 
   // Two runs this month, one of them still in flight, plus one last month that
-  // must not appear in any of this month's numbers.
+  // must not appear in any of this month's numbers. `createRun` has no
+  // `createdAt` parameter — the column is a database default — so each row is
+  // stamped afterwards, which is what keeps these assertions true on every day
+  // of every year rather than only during August 2026.
   const finished = await createRun({ tenantId, prompt: "finished", candidates: [] })
+  await stampCreatedAt(finished.id, THIS_MONTH)
   await completeRun(tenantId, finished.id, 1_000)
 
   const active = await createRun({ tenantId, prompt: "in flight", candidates: [] })
+  await stampCreatedAt(active.id, THIS_MONTH)
   activeRunId = active.id
 
   const old = await createRun({ tenantId, prompt: "last month", candidates: [] })
-  await prisma.run.update({ where: { id: old.id }, data: { createdAt: LAST_MONTH } })
+  await stampCreatedAt(old.id, LAST_MONTH)
   await completeRun(tenantId, old.id, 1_000)
 
   await recordUsage({
@@ -114,6 +131,11 @@ beforeAll(async () => {
 })
 
 afterAll(cleanup)
+
+/** Backdate a run, so a window assertion does not depend on today's date. */
+async function stampCreatedAt(runId: string, createdAt: Date): Promise<void> {
+  await prisma.run.update({ where: { id: runId }, data: { createdAt } })
+}
 
 async function cleanup(): Promise<void> {
   // The switch is install-wide, so a suite that engaged it and walked away
