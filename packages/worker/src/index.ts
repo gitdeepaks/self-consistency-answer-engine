@@ -3,9 +3,11 @@ import {
   closeRedis,
   createCandidateWorker,
   createSynthesisWorker,
+  createWebhookWorker,
   pingRedis,
   queueConfig,
   setLocalRunJobHandlers,
+  setLocalWebhookJobHandler,
 } from "@sce/queue";
 import { describeError } from "@sce/shared";
 import { workerConfig } from "./env.ts";
@@ -14,6 +16,11 @@ import { resolveEvaluator, resolvePanel } from "./providers.ts";
 import { startReaper, type Reaper } from "./reaper.ts";
 import { startRollup, type Rollup } from "./rollup.ts";
 import { MemoryBreakerStore, setBreakerStore } from "./resilience.ts";
+import {
+  processWebhookJob,
+  startWebhookSweeper,
+  type WebhookSweeper,
+} from "./webhooks.ts";
 
 export {
   runJobHandlers,
@@ -28,13 +35,22 @@ export {
 export { reapOnce, startReaper } from "./reaper.ts";
 export { rollupOnce, startRollup } from "./rollup.ts";
 export { workerConfig } from "./env.ts";
+export {
+  emitRunWebhook,
+  emitWebhookEvent,
+  processWebhookJob,
+  pruneOnce,
+  startWebhookSweeper,
+  sweepWebhooksOnce,
+} from "./webhooks.ts";
 
 /**
  * The worker process.
  *
- * Two BullMQ workers — one per queue — plus the deadline reaper. Everything
- * this file does beyond starting them is about stopping them properly, because
- * that is the part a deploy exercises several times a day.
+ * Three BullMQ workers — one per queue — plus the deadline reaper, the usage
+ * rollup and the webhook outbox sweeper. Everything this file does beyond
+ * starting them is about stopping them properly, because that is the part a
+ * deploy exercises several times a day.
  */
 
 export interface WorkerHandle {
@@ -54,6 +70,7 @@ export interface WorkerHandle {
 export async function startWorker(): Promise<WorkerHandle> {
   if (queueConfig.RUN_TRANSPORT === "local") {
     setLocalRunJobHandlers(runJobHandlers);
+    setLocalWebhookJobHandler(processWebhookJob);
     // A fleet-wide breaker needs Redis; without it, per-process state is the
     // honest option rather than a Redis call that cannot succeed.
     setBreakerStore(new MemoryBreakerStore());
@@ -63,15 +80,17 @@ export async function startWorker(): Promise<WorkerHandle> {
     );
     const reaper = startReaper();
     const rollup = startRollup();
-    return { shutdown: () => shutdownLocal(reaper, rollup) };
+    const webhooks = startWebhookSweeper();
+    return { shutdown: () => shutdownLocal(reaper, rollup, webhooks) };
   }
 
   await pingRedis();
 
   const candidateWorker = createCandidateWorker(runJobHandlers.candidate);
   const synthesisWorker = createSynthesisWorker(runJobHandlers.synthesis);
+  const webhookWorker = createWebhookWorker(processWebhookJob);
 
-  for (const worker of [candidateWorker, synthesisWorker]) {
+  for (const worker of [candidateWorker, synthesisWorker, webhookWorker]) {
     worker.on("failed", (job, error) => {
       console.error("[worker] job failed", {
         queue: worker.name,
@@ -91,9 +110,11 @@ export async function startWorker(): Promise<WorkerHandle> {
   await Promise.all([
     candidateWorker.waitUntilReady(),
     synthesisWorker.waitUntilReady(),
+    webhookWorker.waitUntilReady(),
   ]);
   const reaper = startReaper();
   const rollup = startRollup();
+  const webhookSweeper = startWebhookSweeper();
 
   announce();
 
@@ -109,11 +130,16 @@ export async function startWorker(): Promise<WorkerHandle> {
         console.log("[worker] draining…");
         await reaper.stop();
         await rollup.stop();
+        await webhookSweeper.stop();
         // `close()` stops accepting new jobs and waits for active ones to
         // finish. That wait is the entire reason a rolling deploy does not
         // orphan runs — a killed worker's jobs would be redelivered, but only
         // after their lock expired, with the client watching nothing happen.
-        await Promise.all([candidateWorker.close(), synthesisWorker.close()]);
+        await Promise.all([
+          candidateWorker.close(),
+          synthesisWorker.close(),
+          webhookWorker.close(),
+        ]);
         await closeRedis();
         await disconnect();
         console.log("[worker] drained");
@@ -123,10 +149,16 @@ export async function startWorker(): Promise<WorkerHandle> {
   };
 }
 
-async function shutdownLocal(reaper: Reaper, rollup: Rollup): Promise<void> {
+async function shutdownLocal(
+  reaper: Reaper,
+  rollup: Rollup,
+  webhooks: WebhookSweeper,
+): Promise<void> {
   await reaper.stop();
   await rollup.stop();
+  await webhooks.stop();
   setLocalRunJobHandlers(null);
+  setLocalWebhookJobHandler(null);
   await disconnect();
 }
 

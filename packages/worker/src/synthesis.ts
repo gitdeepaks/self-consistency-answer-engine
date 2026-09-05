@@ -28,6 +28,7 @@ import {
   type RunContext,
 } from "./context.ts";
 import { workerConfig } from "./env.ts";
+import { emitRunWebhook } from "./webhooks.ts";
 import { EVALUATOR_SYSTEM_PROMPT, buildEvaluatorPrompt } from "./prompts.ts";
 import { resolveEvaluator } from "./providers.ts";
 import { classify, recordProviderOutcome, withBulkhead } from "./resilience.ts";
@@ -94,6 +95,7 @@ export async function processSynthesisJob(
     const totalLatencyMs = Date.now() - new Date(run.createdAt).getTime();
     await completeRun(tenantId, runId, totalLatencyMs);
     await ctx.emit({ type: "run.completed", runId, totalLatencyMs });
+    await announce(tenantId, runId);
   } catch (error) {
     if (error instanceof RetrySynthesis) throw error.cause;
     await concludeFailed(ctx, describeError(error));
@@ -128,6 +130,31 @@ async function concludeFailed(ctx: RunContext, message: string): Promise<void> {
     });
   });
   await ctx.emit({ type: "run.failed", runId: ctx.runId, error: message });
+  await announce(ctx.tenantId, ctx.runId);
+}
+
+/**
+ * Tell any registered webhook endpoint that the run reached its end.
+ *
+ * The run is re-read rather than assembled from what this function happens to
+ * know, so the summary a customer receives is the same one `GET /v1/runs/{id}`
+ * would return a moment later — a webhook that disagrees with the API it points
+ * at is worse than no webhook.
+ *
+ * Never allowed to fail the job. The run has already concluded and its status
+ * is already durable; a receiver being unreachable must not turn a completed
+ * run into a retried synthesis, which would pay for the evaluator twice.
+ */
+async function announce(tenantId: string, runId: string): Promise<void> {
+  try {
+    const run = await getRun(tenantId, runId);
+    if (run !== null) await emitRunWebhook(run, tenantId);
+  } catch (error: unknown) {
+    console.error("[worker] could not emit the run webhook", {
+      runId,
+      error: describeError(error),
+    });
+  }
 }
 
 /* ------------------------------------------------------------ the evaluator */

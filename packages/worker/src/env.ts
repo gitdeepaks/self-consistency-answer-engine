@@ -104,6 +104,52 @@ const workerEnvSchema = z
       .max(60 * 60_000)
       .default(30_000),
 
+    /**
+     * How often due outbound webhooks are swept out of the database and onto
+     * the queue. 0 disables the sweeper.
+     *
+     * The sweeper is the outbox half of webhook delivery: emitting an event is
+     * a single database write, and this is what turns those rows into jobs. Two
+     * seconds is a latency budget rather than a polling cost — the query is an
+     * index scan over `(status, nextAttemptAt)` that almost always returns
+     * nothing.
+     *
+     * Disabling it does not lose events. It stops them being *delivered*, and
+     * they resume on the next sweep once it is switched back on, which is the
+     * behaviour that makes this a safe knob during an incident.
+     */
+    WEBHOOK_SWEEP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .max(60 * 60_000)
+      .default(2_000),
+
+    /** Deliveries turned into jobs per sweep. Bounds one tenant's burst. */
+    WEBHOOK_SWEEP_BATCH: positiveInt.max(10_000).default(200),
+
+    /**
+     * Wall-clock budget for one delivery attempt.
+     *
+     * Short on purpose. A receiver that needs longer than ten seconds to
+     * acknowledge a webhook is doing its processing inline, which is a bug in
+     * their integration that a generous timeout would hide until it became an
+     * outage — the correct shape is a 2xx and a background job, and the docs
+     * say so.
+     */
+    WEBHOOK_TIMEOUT_MS: durationMs.default(10_000),
+
+    /**
+     * How long settled deliveries are kept before the sweep removes them.
+     * 0 keeps them forever, which is a defensible choice and an unbounded table.
+     */
+    WEBHOOK_RETENTION_DAYS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .max(365)
+      .default(30),
+
     /** How long a SIGTERM waits for in-flight jobs before forcing the exit. */
     SHUTDOWN_TIMEOUT_MS: durationMs.default(30_000),
   })
