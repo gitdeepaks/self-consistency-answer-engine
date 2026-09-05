@@ -1,0 +1,48 @@
+{
+  "name": "@sce/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Self-Consistency Answer Engine API",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/types/sdk/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/sdk/src/index.d.ts",
+      "browser": "./dist/browser/index.js",
+      "bun": "./dist/bun/index.js",
+      "node": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "bun run build:js && bun run build:types",
+    "build:js": "bun build src/index.ts --outdir dist --target node --format esm --external zod && bun build src/index.ts --outdir dist/browser --target browser --format esm --external zod && bun build src/index.ts --outdir dist/bun --target bun --format esm --external zod",
+    "build:types": "bunx tsc -p tsconfig.build.json && bun run scripts/declarations.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@sce/shared": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "llm",
+    "ai",
+    "self-consistency",
+    "openai",
+    "anthropic",
+    "gemini",
+    "sdk"
+  ]
+}

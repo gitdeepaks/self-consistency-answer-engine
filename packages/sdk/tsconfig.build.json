@@ -1,0 +1,30 @@
+{
+  // Declaration emit for the published package.
+  //
+  // `rootDir` reaches up to `packages/` on purpose. The SDK vendors the shared
+  // contract through relative imports (see `src/vendor/shared.ts`), so the
+  // emitted `.d.ts` files have to include those modules too — and they have to
+  // land at a path the relative import in the emitted declaration resolves to.
+  // Emitting both trees under one root is what makes that work without a
+  // bundler and without a hand-maintained second copy of the types.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "..",
+    "outDir": "./dist/types",
+    // `.ts` specifiers in source become `.js` in the emitted declarations,
+    // which is what a consumer's resolver expects to see.
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "../shared/src/**/*.ts"
+  ],
+  "exclude": [
+    "../shared/src/**/*.test.ts",
+    "src/**/*.test.ts",
+    "examples"
+  ]
+}

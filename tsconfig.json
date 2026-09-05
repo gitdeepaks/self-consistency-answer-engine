@@ -6,12 +6,14 @@
     "packages/queue/src/**/*",
     "packages/worker/src/**/*",
     "packages/server/src/**/*",
+    "packages/sdk/src/**/*",
     "infra/**/*.ts",
     "test-setup.ts"
   ],
   "exclude": [
     "node_modules",
     "**/dist",
-    "packages/db/generated"
+    "packages/db/generated",
+    "packages/sdk/dist"
   ]
 }
