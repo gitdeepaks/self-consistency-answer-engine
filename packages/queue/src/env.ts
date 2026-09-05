@@ -75,6 +75,32 @@ const queueEnvSchema = z.object({
    * failure reason and the stack that produced it.
    */
   QUEUE_KEEP_FAILED: z.coerce.number().int().nonnegative().max(100_000).default(10_000),
+
+  /**
+   * Delivery attempts per outbound webhook before it is marked failed.
+   *
+   * Six, with the exponential backoff below, spans roughly five minutes — long
+   * enough to ride out a receiver's restart or a brief network partition, short
+   * enough that a genuinely broken endpoint shows up in the delivery log while
+   * the person who broke it is still at their desk. Past that point the answer
+   * is a replay from the log, not a longer schedule: an event delivered eight
+   * hours late is rarely more use than one delivered never, and the retry
+   * traffic in the meantime is indistinguishable from an attack.
+   */
+  WEBHOOK_MAX_ATTEMPTS: positiveInt.max(20).default(6),
+
+  /** Base delay for the webhook queue's exponential backoff. */
+  WEBHOOK_BACKOFF_MS: durationMs.default(5_000),
+
+  /**
+   * Deliveries processed concurrently by one worker instance.
+   *
+   * Higher than the candidate ceiling because a delivery is an HTTP request
+   * that is mostly waiting, not a model call that costs money — and because a
+   * backlog of webhooks behind one slow receiver is exactly the thing that must
+   * not starve the queue.
+   */
+  WEBHOOK_CONCURRENCY: positiveInt.max(256).default(16),
 })
 
 export type QueueEnv = z.infer<typeof queueEnvSchema>

@@ -17,6 +17,17 @@ export const CANDIDATE_QUEUE = `${ns}.candidate`
 /** Synthesis jobs: one per run, parent of that run's candidate jobs. */
 export const SYNTHESIS_QUEUE = `${ns}.synthesis`
 
+/**
+ * Outbound webhook deliveries.
+ *
+ * A separate queue rather than a job type on an existing one, because the two
+ * have opposite shapes: a candidate job is expensive, bounded and internal,
+ * while a delivery is cheap, unbounded in count and waits on a stranger's
+ * server. Sharing a queue would let one slow receiver's backlog occupy the
+ * concurrency a run needs to finish.
+ */
+export const WEBHOOK_QUEUE = `${ns}.webhook`
+
 /** Live progress tail for one run. Postgres holds the durable copy. */
 export function runStreamKey(runId: string): string {
   return `${ns}:run:${runId}:events`
@@ -67,4 +78,17 @@ export function candidateJobId(runId: string, candidateId: string): string {
 
 export function synthesisJobId(runId: string): string {
   return `synth-${runId}`
+}
+
+/**
+ * One job per delivery row.
+ *
+ * The delivery id already identifies exactly one event addressed to exactly one
+ * endpoint — the `(endpointId, eventId)` unique index guarantees it — so this
+ * makes a redelivered emission job a no-op at the queue as well as at the
+ * database, which is belt and braces on the one guarantee a customer notices
+ * when it is missing.
+ */
+export function webhookJobId(deliveryId: string): string {
+  return `hook-${deliveryId}`
 }
