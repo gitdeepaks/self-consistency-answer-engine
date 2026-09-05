@@ -104,7 +104,7 @@ Every model id is overridable — see `.env.example`.
 
 ## Repository layout
 
-A Bun workspace with six packages:
+A Bun workspace with eight packages:
 
 | Package           | Role                                                                                                                       |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -113,6 +113,8 @@ A Bun workspace with six packages:
 | `packages/queue`  | The Redis control plane: BullMQ queues and flows, the durable progress bus, cancellation, the dead-letter queue.             |
 | `packages/server` | Hono app: RPC routes, idempotency, cancellation, the SSE fan-in. Never calls a model.                                       |
 | `packages/worker` | The orchestrator: candidate and synthesis job processors, streaming, budgets, circuit breakers, the deadline reaper.         |
+| `packages/web`    | Next.js app: ask, live run view, history, sharing, team, usage, webhooks, the API playground and the operations console.     |
+| `packages/sdk`    | `@sce/sdk` — the published TypeScript client for `/v1`. Types come from the same Zod schemas; nothing is generated.          |
 | `packages/cli`    | OpenTUI + React terminal client, talking to the server over the typed Hono RPC client.                                      |
 
 ---
@@ -171,8 +173,40 @@ checkpoint. Closing a tab stops costing tokens.
 
 ## API
 
-Base URL `http://localhost:8787`. The CLI consumes these through `hc<AppType>()`, so route paths,
-inputs and response shapes are type-checked end to end.
+There are two surfaces, and the difference between them is the whole of Phase 6.
+
+**`/v1` is the product.** Versioned, documented by an
+[OpenAPI document](doc/api/openapi.json) generated from the same Zod schemas the server validates
+with, and guarded in CI against breaking changes. Its contract is kept for twelve months past any
+deprecation notice — see [`doc/api/versioning.md`](doc/api/versioning.md). Start at
+[`doc/api/`](doc/api/README.md), or:
+
+```bash
+bun add @sce/sdk
+```
+
+```ts
+import { Sce } from "@sce/sdk"
+
+const sce = new Sce({ apiKey: process.env.SCE_API_KEY!, baseUrl: "http://localhost:8787" })
+const run = await sce.ask("Why is the sky blue?", {
+  onDelta: ({ text }) => process.stdout.write(text),
+})
+console.log(run.synthesis?.finalAnswer)
+```
+
+It adds, over `/api`: cursor pagination everywhere, `Idempotency-Key` on every POST,
+`ETag`/`If-None-Match` on run reads, one error envelope (`{ code, message, details, requestId }`),
+and signed outbound [webhooks](doc/api/webhooks.md) for `run.completed`, `run.failed` and
+`quota.exceeded`. The web app's **Settings → Playground** page runs real requests against it from
+inside your session.
+
+**`/api` is first-party and unversioned.** The web app and the TUI consume it through
+`hc<AppType>()`, so route paths, inputs and response shapes are type-checked end to end — and it is
+free to change alongside them, because it ships with them. Nothing outside this repository should
+depend on it.
+
+The rest of this section documents `/api`. Base URL `http://localhost:8787`.
 
 Everything that touches tenant data requires `Authorization: Bearer <credential>`. The public
 surface is four routes, and each is public for a reason you can state:
@@ -390,6 +424,8 @@ show each model's raw answer, so you can check the synthesis against its sources
 | `bun run auth:reconcile`   | Repair Clerk↔Postgres drift; exits non-zero if it found any |
 | `bun run dlq <command>`    | Queue depth, dead letters, replay, reap    |
 | `bun run scale-test`       | Multi-process scale and chaos drill        |
+| `bun run api:spec`         | Regenerate `doc/api/openapi.json` from the routes |
+| `bun run api:check`        | Fail on a stale spec, or a breaking change to `/v1` |
 | `bun test`                 | Full suite                                 |
 | `bun run typecheck`        | `tsc --noEmit` across every package        |
 
