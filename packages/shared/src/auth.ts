@@ -374,6 +374,10 @@ export const auditActionSchema = z.enum([
   "RUN_SHARED",
   "RUN_SHARE_REVOKED",
   "DLQ_REPLAYED",
+  /* Phase 6 — the public API: webhook endpoints and their deliveries. */
+  "WEBHOOK_ENDPOINT_CREATED",
+  "WEBHOOK_ENDPOINT_DELETED",
+  "WEBHOOK_REPLAYED",
 ])
 export type AuditAction = z.infer<typeof auditActionSchema>
 

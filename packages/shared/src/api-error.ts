@@ -57,6 +57,15 @@ export const apiErrorSchema = z.object({
   feature: z.string().optional(),
   /** Present on `budget_exhausted`. */
   killSwitch: killSwitchSchema.optional(),
+  /**
+   * Present on `validation_failed`: which fields, and what was wrong with them.
+   *
+   * A 400 that says "validation failed" leaves an integrator diffing their
+   * payload against the documentation; one that says `prompt: must be at least
+   * 3 characters` is a fix. Optional rather than required because some
+   * validation failures are about the request as a whole.
+   */
+  fields: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
 })
 export type ApiError = z.infer<typeof apiErrorSchema>
 

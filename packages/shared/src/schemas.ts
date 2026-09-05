@@ -92,7 +92,23 @@ export type CancelRunInput = z.infer<typeof cancelRunInputSchema>;
  * automatically; other clients pass `?afterSeq=`. Both land here, and both are
  * parsed rather than trusted — the value ends up in a database predicate.
  */
-export const eventCursorSchema = z.coerce.number().int().nonnegative().catch(0);
+export const eventCursorInputSchema = z.coerce.number().int().nonnegative();
+
+/**
+ * The same cursor, but tolerant of nonsense.
+ *
+ * `Last-Event-ID` is replayed by the browser from whatever it last saw, which
+ * after a proxy truncated a frame can be a fragment. Falling back to zero
+ * replays the run from its beginning — a client that sees every event twice is
+ * a client that works, whereas one refused with a 400 for a header it did not
+ * choose to send is not.
+ *
+ * The `.catch()` is also why the two are separate: OpenAPI has no way to
+ * describe "and if it is rubbish, pretend it was zero", so the *documented*
+ * shape of `?afterSeq=` is `eventCursorInputSchema` above and this wrapper is
+ * what the header is parsed with.
+ */
+export const eventCursorSchema = eventCursorInputSchema.catch(0);
 
 /** `?afterSeq=` on the SSE route, for clients that are not `EventSource`. */
 export const eventStreamQuerySchema = z.object({
@@ -232,6 +248,35 @@ export const runSummarySchema = runSchema
     confidence: z.number().nullable(),
   });
 export type RunSummary = z.infer<typeof runSummarySchema>;
+
+/**
+ * Narrow a full run to the summary a list — or a webhook — carries.
+ *
+ * Written out field by field rather than spread-and-delete, so that adding a
+ * field to `Run` is a compile error here instead of a field that silently never
+ * reaches the summary. The three derived values are the whole point of the
+ * shape: a caller with a summary can sort, filter and badge a run without
+ * fetching its candidates.
+ */
+export function toRunSummary(run: Run): RunSummary {
+  return {
+    id: run.id,
+    createdByUserId: run.createdByUserId,
+    prompt: run.prompt,
+    status: run.status,
+    error: run.error,
+    totalLatencyMs: run.totalLatencyMs,
+    temperature: run.temperature,
+    createdAt: run.createdAt,
+    completedAt: run.completedAt,
+    deadlineAt: run.deadlineAt,
+    canceledAt: run.canceledAt,
+    tags: run.tags,
+    candidateCount: run.candidates.length,
+    hasSynthesis: run.synthesis !== null,
+    confidence: run.synthesis?.confidence ?? null,
+  };
+}
 
 export const providerHealthSchema = z.object({
   id: providerIdSchema,
