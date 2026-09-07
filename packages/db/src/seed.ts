@@ -56,6 +56,7 @@ function seeds(): CandidateSeed[] {
 function reviews(): CandidateReview[] {
   return Object.values(PROVIDERS).map((spec, index) => ({
     provider: spec.id,
+    label: spec.label,
     score: 7 + index,
     strengths: [`${spec.label} covered the trade-offs concretely.`],
     weaknesses: [],

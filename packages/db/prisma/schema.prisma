@@ -129,6 +129,16 @@ enum FeedbackReason {
   other
 }
 
+/// Where a thumbs-down has got to in the eval triage queue. Lowercase to match
+/// `feedbackTriageStatusSchema` in @sce/shared, and to sit consistently beside
+/// `FeedbackRating` and `FeedbackReason`, which are read in the same query.
+enum FeedbackTriageStatus {
+  open
+  accepted
+  dismissed
+  promoted
+}
+
 /// Commercial plans. Lowercase so the generated union matches `PlanId` in
 /// @sce/shared exactly — the same no-mapping-layer argument as `ProviderId`.
 enum PlanId {
@@ -195,6 +205,9 @@ model User {
   createdApiKeys  ApiKey[]          @relation("ApiKeyCreatedBy")
   createdShares   RunShare[]        @relation("RunShareCreatedBy")
   feedback        RunFeedback[]     @relation("RunFeedbackAuthor")
+  /// Verdicts this person triaged. A different relation from the one above,
+  /// because the reviewer and the reporter are different people by design.
+  triagedFeedback RunFeedback[]     @relation("RunFeedbackTriager")
   createdWebhooks WebhookEndpoint[] @relation("WebhookEndpointCreatedBy")
 }
 
@@ -253,6 +266,41 @@ model Run {
   canceledAt   DateTime?
   cancelReason String?
 
+  /// The prompt set the run was produced with — `PROMPT_SETS` in @sce/shared.
+  ///
+  /// Nullable only because runs created before Phase 7 have no answer to the
+  /// question. Everything since carries it, which is what makes any stored
+  /// answer traceable to the exact wording that produced it: prompt text is
+  /// immutable per id, so this column plus the registry reconstructs the run.
+  promptSetId String?
+
+  /// The panel configuration used, and the experiment arm that chose it.
+  ///
+  /// `panelId` alone answers "which models, sampled how often"; the experiment
+  /// pair is what lets the admin console group runs by arm and report quality
+  /// per variant instead of per release. Null outside an experiment.
+  panelId      String?
+  experimentId String?
+  variantId    String?
+
+  /// The answer cache.
+  ///
+  /// `cacheKey` is the exact-match index — a digest of the normalised prompt
+  /// and everything that changes the answer. `cacheScope` is the same digest
+  /// *without* the prompt, which narrows the near-duplicate search to runs that
+  /// used the same panel; `promptSimhash` is the 64-bit fingerprint compared
+  /// inside that scope. All three are computed in @sce/shared's `answer-cache`
+  /// and are meaningless without it.
+  cacheKey      String?
+  cacheScope    String?
+  promptSimhash String?
+
+  /// Set when this run's answer was copied from an earlier one instead of being
+  /// generated. Points at the run that actually paid for the model calls, and
+  /// is what makes cache hit rate a query rather than a counter somebody has to
+  /// remember to increment.
+  cachedFromRunId String?
+
   /// Free-form labels for organising history. A Postgres `text[]` with a GIN
   /// index rather than a join table: tags are read on every history query,
   /// written rarely, never joined *from*, and capped at sixteen per run — the
@@ -281,6 +329,15 @@ model Run {
   @@index([tenantId, createdAt])
   @@index([tenantId, status])
   @@index([createdByUserId])
+  /// The answer cache's exact-match lookup: the newest completed run in this
+  /// workspace with this key. Tenant-leading like every other index here, so a
+  /// cache hit can never cross a workspace boundary.
+  @@index([tenantId, cacheKey, createdAt])
+  /// The near-duplicate search: recent runs of the same panel, whose
+  /// fingerprints are then compared in the application.
+  @@index([tenantId, cacheScope, createdAt])
+  /// Experiment reporting: every run in one arm, newest first.
+  @@index([tenantId, experimentId, variantId, createdAt])
   /// Reaper query: find runs past their deadline that no worker finished.
   @@index([status, deadlineAt])
   /// History filtering by tag. GIN, because the predicate is array containment.
@@ -308,6 +365,14 @@ model Candidate {
   /// answer panel that shuffles between reads is a real bug, not a cosmetic one.
   position Int @default(0)
 
+  /// 1-based index of this sample within its panel member.
+  ///
+  /// Above one only for n-of-1 self-consistency, where the same model is asked
+  /// the same question several times — the single-model baseline the panel is
+  /// claimed to beat. It is also why `@@unique([runId, provider])` is gone:
+  /// that constraint made the baseline unrepresentable.
+  sample Int @default(1)
+
   /// Inline answer body. Null when the body exceeded the inline threshold and
   /// was offloaded — see `contentRef`.
   content      String?
@@ -329,7 +394,6 @@ model Candidate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([runId, provider])
   @@unique([runId, position])
   @@index([runId])
 }
@@ -352,7 +416,18 @@ model Synthesis {
   disagreements Json  @default("[]")
   /// CandidateReview[] — per-candidate scoring.
   reviews       Json  @default("[]")
+  /// The evaluator's own number, exactly as it reported it. Never rewritten.
   confidence    Float @default(0)
+
+  /// The same number after the calibration map this build was running with, or
+  /// null when it had none.
+  ///
+  /// Both are kept for ever, and that is the point: the raw value is the
+  /// evidence the next calibration is fitted from, and keeping only the
+  /// corrected one would make the correction impossible to ever check.
+  calibratedConfidence Float?
+  /// Which map produced it, so a suspect correction can be traced to its fit.
+  calibrationId        String?
 
   latencyMs    Int?
   inputTokens  Int?
@@ -445,17 +520,30 @@ model RunFeedback {
   /// Stored verbatim. It is the part a human will actually read during triage.
   note   String?
 
+  /// The triage decision, which is a different act by a different person: the
+  /// customer says the answer was wrong, and somebody on the team decides
+  /// whether it was. Kept beside the report rather than overwriting it, so a
+  /// reviewer's conclusion never rewrites the evidence it was drawn from.
+  triageStatus    FeedbackTriageStatus @default(open)
+  triagedAt       DateTime?
+  triagedByUserId String?
+  triageNote      String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  run    Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
-  user   User   @relation("RunFeedbackAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run       Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user      User   @relation("RunFeedbackAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  triagedBy User?  @relation("RunFeedbackTriager", fields: [triagedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([runId, userId])
   @@index([tenantId, createdAt])
   /// The triage queue: every thumbs-down in a workspace, newest first.
   @@index([tenantId, rating, createdAt])
+  /// The queue somebody actually works: what is still open, oldest complaint
+  /// first, so a backlog is drained rather than skimmed.
+  @@index([tenantId, triageStatus, createdAt])
 }
 
 /**

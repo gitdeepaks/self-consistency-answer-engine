@@ -74,8 +74,15 @@ interface StoredBody {
   bytes: number
 }
 
-/** Keep a body in its row, or offload it and keep a pointer. */
-async function storeBody(
+/**
+ * Keep a body in its row, or offload it and keep a pointer.
+ *
+ * Exported for `cache.ts`, which writes a whole finished run in one statement
+ * and has to make the same inline-or-offload decision. Copying a source run's
+ * `contentRef` instead would alias one blob from two runs, and deleting either
+ * would empty the other.
+ */
+export async function storeBody(
   tenantId: string,
   runId: string,
   name: string,
@@ -95,7 +102,7 @@ async function storeBody(
  * A missing blob is reported in-band rather than thrown: losing one answer body
  * must not make the whole run unreadable.
  */
-async function readBody(inline: string | null, ref: string | null): Promise<string | null> {
+export async function readBody(inline: string | null, ref: string | null): Promise<string | null> {
   if (inline !== null) return inline
   if (ref === null) return null
   const body = await blobStore().get(ref)
@@ -135,6 +142,7 @@ export async function toSynthesis(row: SynthesisRow): Promise<Synthesis> {
     disagreements: fromJsonColumn(row.disagreements, stringArraySchema, []),
     reviews: fromJsonColumn<CandidateReview[]>(row.reviews, reviewArraySchema, []),
     confidence: row.confidence,
+    calibratedConfidence: row.calibratedConfidence,
     latencyMs: row.latencyMs,
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
@@ -156,6 +164,11 @@ export async function toRun(
     completedAt: row.completedAt?.toISOString() ?? null,
     deadlineAt: row.deadlineAt?.toISOString() ?? null,
     canceledAt: row.canceledAt?.toISOString() ?? null,
+    promptSetId: row.promptSetId,
+    panelId: row.panelId,
+    experimentId: row.experimentId,
+    variantId: row.variantId,
+    cachedFromRunId: row.cachedFromRunId,
     tags: row.tags,
     candidates: await Promise.all(row.candidates.map(toCandidate)),
     synthesis: row.synthesis ? await toSynthesis(row.synthesis) : null,
@@ -185,6 +198,28 @@ export interface CandidateSeed {
   model: string
   status: CandidateStatus
   error?: string | null
+  /** 1-based sample index within this panel member. One unless the panel repeats it. */
+  sample?: number
+}
+
+/**
+ * Everything about a run that is decided before it starts and never changes.
+ *
+ * Grouped rather than passed as six more parameters because they travel
+ * together: the panel implies the prompt set, the prompt set is half of the
+ * cache key, and the experiment is the reason the panel was chosen. A run that
+ * carried some of them and not others would be one nothing could be concluded
+ * from.
+ */
+export interface RunProvenance {
+  promptSetId?: string | null
+  panelId?: string | null
+  experimentId?: string | null
+  variantId?: string | null
+  /** From `fingerprint()` in @sce/shared. Absent leaves the run uncacheable. */
+  cacheKey?: string | null
+  cacheScope?: string | null
+  promptSimhash?: string | null
 }
 
 export interface CreateRunInput {
@@ -200,6 +235,8 @@ export interface CreateRunInput {
   /** Per-run ceilings the worker enforces before each model call. */
   maxTotalTokens?: number | null
   maxCostMicroCents?: number | null
+  /** Which prompts, which panel, which experiment arm, and the cache keys. */
+  provenance?: RunProvenance
 }
 
 export async function createRun(input: CreateRunInput): Promise<Run> {
@@ -217,6 +254,13 @@ export async function createRun(input: CreateRunInput): Promise<Run> {
         input.maxCostMicroCents === undefined || input.maxCostMicroCents === null
           ? null
           : BigInt(input.maxCostMicroCents),
+      promptSetId: input.provenance?.promptSetId ?? null,
+      panelId: input.provenance?.panelId ?? null,
+      experimentId: input.provenance?.experimentId ?? null,
+      variantId: input.provenance?.variantId ?? null,
+      cacheKey: input.provenance?.cacheKey ?? null,
+      cacheScope: input.provenance?.cacheScope ?? null,
+      promptSimhash: input.provenance?.promptSimhash ?? null,
       candidates: {
         create: input.candidates.map((c, position) => ({
           position,
@@ -225,6 +269,7 @@ export async function createRun(input: CreateRunInput): Promise<Run> {
           model: c.model,
           status: c.status,
           error: c.error ?? null,
+          sample: c.sample ?? 1,
         })),
       },
     },
@@ -413,7 +458,11 @@ export async function saveSynthesis(
     agreements: string[]
     disagreements: string[]
     reviews: CandidateReview[]
+    /** The evaluator's own number. Stored unchanged, always. */
     confidence: number
+    /** The corrected reading, and the map that produced it. Null when unfitted. */
+    calibratedConfidence?: number | null
+    calibrationId?: string | null
     latencyMs: number
     inputTokens: number | null
     outputTokens: number | null
@@ -434,6 +483,8 @@ export async function saveSynthesis(
     disagreements: toJson(input.disagreements),
     reviews: toJson(input.reviews),
     confidence: input.confidence,
+    calibratedConfidence: input.calibratedConfidence ?? null,
+    calibrationId: input.calibrationId ?? null,
     latencyMs: input.latencyMs,
     inputTokens: input.inputTokens,
     outputTokens: input.outputTokens,
@@ -742,7 +793,7 @@ export async function listRuns(options: {
     orderBy: { createdAt: "desc" },
     include: {
       _count: { select: { candidates: true } },
-      synthesis: { select: { id: true, confidence: true } },
+      synthesis: { select: { id: true, confidence: true, calibratedConfidence: true } },
     },
   })
 
@@ -762,10 +813,16 @@ export async function listRuns(options: {
       completedAt: row.completedAt?.toISOString() ?? null,
       deadlineAt: row.deadlineAt?.toISOString() ?? null,
       canceledAt: row.canceledAt?.toISOString() ?? null,
+      promptSetId: row.promptSetId,
+      panelId: row.panelId,
+      experimentId: row.experimentId,
+      variantId: row.variantId,
+      cachedFromRunId: row.cachedFromRunId,
       tags: row.tags,
       candidateCount: row._count.candidates,
       hasSynthesis: row.synthesis !== null,
       confidence: row.synthesis?.confidence ?? null,
+      calibratedConfidence: row.synthesis?.calibratedConfidence ?? null,
     })),
     nextCursor,
   }

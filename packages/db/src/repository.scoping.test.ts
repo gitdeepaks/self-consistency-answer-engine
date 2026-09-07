@@ -12,8 +12,10 @@ import { fileURLToPath } from "node:url"
  * takes. Deliberate exceptions are listed here with a reason, so adding one is
  * a visible decision in the diff rather than an omission.
  *
- * Nine files are scanned. `repository.ts` holds the runs and everything hanging
- * off them; `auth.ts` holds credentials and the audit trail; `metering.ts` holds
+ * Eleven files are scanned. `repository.ts` holds the runs and everything hanging
+ * off them; `cache.ts` holds the answer cache's lookup and its copy-on-hit;
+ * `evals.ts` holds the cross-tenant quality reads, every one of which is listed
+ * below with the reason it is allowed to span tenants; `auth.ts` holds credentials and the audit trail; `metering.ts` holds
  * the counters quotas are decided from; `billing.ts` holds subscriptions and the
  * kill switch; `shares.ts` holds public links; `feedback.ts` holds human
  * verdicts; `webhooks.ts` holds outbound webhook endpoints and their delivery log;
@@ -58,6 +60,41 @@ const FILES: Scanned[] = [
       findPrice: "reads the install-global price list",
       upsertModelPrice: "writes the install-global price list",
       listOverdueRuns: "takes a RunScope, whose cross-tenant variant is explicit at the call site",
+      readBody: "resolves a body that a tenant-scoped read already returned; touches no database",
+    },
+  },
+  {
+    file: "cache.ts",
+    source: readFileSync(path.join(HERE, "cache.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {},
+    exemptFunctions: {},
+  },
+  {
+    file: "evals.ts",
+    source: readFileSync(path.join(HERE, "evals.ts"), "utf8"),
+    globalModels: {},
+    exemptCalls: {
+      "run.count":
+        "install-wide counters behind an EvalScope — they read no tenant-owned data and " +
+        "return two integers",
+      "usageRecord.aggregate":
+        "the install-wide spend the cache saving is estimated from; same EvalScope, and it " +
+        "returns one sum",
+      "runFeedback.findMany":
+        "the eval set and the calibration sample are drawn from every workspace by " +
+        "definition; both take an EvalScope whose reason is typed at the call site, and " +
+        "neither returns an answer body",
+      "runFeedback.updateMany":
+        "marks confirmed verdicts as promoted across the install, after the export that " +
+        "created an eval case for each; same EvalScope",
+    },
+    exemptFunctions: {
+      experimentReport: "an A/B result computed over one tenant is not a result; explicit EvalScope",
+      cacheReport: "install-wide cache hit rate and the spend it avoided; same EvalScope",
+      listPromotableFeedback: "the eval set is drawn from every workspace; same EvalScope",
+      markFeedbackPromoted: "closes out the verdicts that export promoted; same EvalScope",
+      calibrationSample: "calibration needs the install's traffic, not one workspace's; same EvalScope",
     },
   },
   {

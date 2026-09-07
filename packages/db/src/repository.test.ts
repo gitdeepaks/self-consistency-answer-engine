@@ -114,8 +114,8 @@ describe("json columns", () => {
   test("agreements, disagreements and reviews round-trip as native JSON", async () => {
     const runId = await newRun()
     const reviews = [
-      { provider: "openai" as const, score: 8, strengths: ["clear"], weaknesses: [] },
-      { provider: "anthropic" as const, score: 9, strengths: [], weaknesses: ["terse"] },
+      { provider: "openai" as const, label: "OpenAI", score: 8, strengths: ["clear"], weaknesses: [] },
+      { provider: "anthropic" as const, label: "Claude", score: 9, strengths: [], weaknesses: ["terse"] },
     ]
 
     await saveSynthesis(tenantId, runId, {
