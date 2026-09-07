@@ -104,7 +104,7 @@ Every model id is overridable — see `.env.example`.
 
 ## Repository layout
 
-A Bun workspace with eight packages:
+A Bun workspace with nine packages:
 
 | Package           | Role                                                                                                                       |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -116,6 +116,7 @@ A Bun workspace with eight packages:
 | `packages/web`    | Next.js app: ask, live run view, history, sharing, team, usage, webhooks, the API playground and the operations console.     |
 | `packages/sdk`    | `@sce/sdk` — the published TypeScript client for `/v1`. Types come from the same Zod schemas; nothing is generated.          |
 | `packages/cli`    | OpenTUI + React terminal client, talking to the server over the typed Hono RPC client.                                      |
+| `packages/evals`  | The answer-quality harness: a 200-item golden set, a blind LLM judge, the single-model and majority-vote baselines, and the regression gate. |
 
 ---
 
@@ -426,12 +427,18 @@ show each model's raw answer, so you can check the synthesis against its sources
 | `bun run scale-test`       | Multi-process scale and chaos drill        |
 | `bun run api:spec`         | Regenerate `doc/api/openapi.json` from the routes |
 | `bun run api:check`        | Fail on a stale spec, or a breaking change to `/v1` |
+| `bun run evals dataset`    | Validate the golden set and report its coverage |
+| `bun run evals run`        | Grade a deployment against the golden set, writing a report |
+| `bun run evals gate`       | Fail on a quality regression against the committed baseline |
+| `bun run evals calibrate`  | Fit the confidence correction, checked on held-out answers |
+| `bun run evals judges`     | Measure the judge against the human-labelled subset |
+| `bun run evals triage`     | Turn accepted thumbs-downs into staged eval cases |
 | `bun test`                 | Full suite                                 |
 | `bun run typecheck`        | `tsc --noEmit` across every package        |
 
 ### Tests
 
-214 tests, no API keys and no network required — every model call runs against
+714 tests, no API keys and no network required — every model call runs against
 `MockLanguageModelV4`, and the OAuth flow runs against a stub authorization server on loopback. Run `bun run db:up` first: the database, queue and bus suites exercise the
 real Postgres and Redis, because what they assert (enum enforcement, cascades, flow ordering, the
 backfill/tail join) is precisely what a mock cannot get wrong. `test-setup.ts` moves the suite onto
@@ -459,6 +466,17 @@ its own Redis namespace, so a `bun run dev` fleet in another terminal cannot cla
 - `packages/shared/src/providers.test.ts` — direct key beats gateway, panel subsets, and the
   evaluator keeping its own model rather than inheriting the panel member's.
 - `packages/shared/src/env-file.test.ts` — root `.env` discovery and parsing.
+- `packages/shared/src/panels.test.ts` — panel expansion and seat labelling, and that experiment
+  assignment is stable per workspace, spread across workspaces, and **independent between
+  experiments** — the test that catches FNV-1a's low bit being pure input parity.
+- `packages/shared/src/calibration.test.ts` — reliability bins, isotonic fitting, and that a
+  "correction" which does not improve held-out error is not reported as an improvement.
+- `packages/shared/src/answer-cache.test.ts` — what counts as the same question, and specifically
+  the pairs that must **not** match: "in Rust" is not served the Python answer.
+- `packages/evals/src/harness.test.ts` — the harness measuring the product, measured itself: the
+  shipped golden set parses and covers every category, baselines are computed from one run, the
+  judge prompt never leaks which system wrote the answer, category means cannot be swamped by the
+  largest category, and the gate blocks the regressions it claims to.
 
 The multi-process drill is separate, because it makes real model calls:
 

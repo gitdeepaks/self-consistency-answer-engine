@@ -513,6 +513,12 @@
       },
       "Run": {
         "properties": {
+          "cachedFromRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "canceledAt": {
             "type": [
               "string",
@@ -629,11 +635,29 @@
               "null"
             ]
           },
+          "experimentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },
+          "panelId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "prompt": {
             "type": "string"
+          },
+          "promptSetId": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "enum": [
@@ -654,6 +678,12 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "calibratedConfidence": {
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "confidence": {
                 "type": "number"
@@ -694,6 +724,10 @@
               "reviews": {
                 "items": {
                   "properties": {
+                    "label": {
+                      "description": "The candidate label shown in the prompt, echoed back verbatim.",
+                      "type": "string"
+                    },
                     "provider": {
                       "enum": [
                         "openai",
@@ -725,6 +759,7 @@
                   },
                   "required": [
                     "provider",
+                    "label",
                     "score",
                     "strengths",
                     "weaknesses"
@@ -742,6 +777,7 @@
               "disagreements",
               "reviews",
               "confidence",
+              "calibratedConfidence",
               "latencyMs",
               "inputTokens",
               "outputTokens"
@@ -768,6 +804,12 @@
               "number",
               "null"
             ]
+          },
+          "variantId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -782,6 +824,11 @@
           "completedAt",
           "deadlineAt",
           "canceledAt",
+          "promptSetId",
+          "panelId",
+          "experimentId",
+          "variantId",
+          "cachedFromRunId",
           "tags",
           "candidates",
           "synthesis"
@@ -905,6 +952,18 @@
       },
       "RunSummary": {
         "properties": {
+          "cachedFromRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "calibratedConfidence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "canceledAt": {
             "type": [
               "string",
@@ -947,14 +1006,32 @@
               "null"
             ]
           },
+          "experimentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "hasSynthesis": {
             "type": "boolean"
           },
           "id": {
             "type": "string"
           },
+          "panelId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "prompt": {
             "type": "string"
+          },
+          "promptSetId": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "enum": [
@@ -985,6 +1062,12 @@
               "number",
               "null"
             ]
+          },
+          "variantId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -999,10 +1082,16 @@
           "completedAt",
           "deadlineAt",
           "canceledAt",
+          "promptSetId",
+          "panelId",
+          "experimentId",
+          "variantId",
+          "cachedFromRunId",
           "tags",
           "candidateCount",
           "hasSynthesis",
-          "confidence"
+          "confidence",
+          "calibratedConfidence"
         ],
         "type": "object"
       },
@@ -1575,6 +1664,18 @@
                 "properties": {
                   "run": {
                     "properties": {
+                      "cachedFromRunId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "calibratedConfidence": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
                       "canceledAt": {
                         "type": [
                           "string",
@@ -1617,14 +1718,32 @@
                           "null"
                         ]
                       },
+                      "experimentId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "hasSynthesis": {
                         "type": "boolean"
                       },
                       "id": {
                         "type": "string"
                       },
+                      "panelId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "prompt": {
                         "type": "string"
+                      },
+                      "promptSetId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "status": {
                         "enum": [
@@ -1655,6 +1774,12 @@
                           "number",
                           "null"
                         ]
+                      },
+                      "variantId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -1669,10 +1794,16 @@
                       "completedAt",
                       "deadlineAt",
                       "canceledAt",
+                      "promptSetId",
+                      "panelId",
+                      "experimentId",
+                      "variantId",
+                      "cachedFromRunId",
                       "tags",
                       "candidateCount",
                       "hasSynthesis",
-                      "confidence"
+                      "confidence",
+                      "calibratedConfidence"
                     ],
                     "type": "object"
                   }
@@ -1720,6 +1851,18 @@
                   },
                   "run": {
                     "properties": {
+                      "cachedFromRunId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "calibratedConfidence": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
                       "canceledAt": {
                         "type": [
                           "string",
@@ -1762,14 +1905,32 @@
                           "null"
                         ]
                       },
+                      "experimentId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "hasSynthesis": {
                         "type": "boolean"
                       },
                       "id": {
                         "type": "string"
                       },
+                      "panelId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "prompt": {
                         "type": "string"
+                      },
+                      "promptSetId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "status": {
                         "enum": [
@@ -1800,6 +1961,12 @@
                           "number",
                           "null"
                         ]
+                      },
+                      "variantId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -1814,10 +1981,16 @@
                       "completedAt",
                       "deadlineAt",
                       "canceledAt",
+                      "promptSetId",
+                      "panelId",
+                      "experimentId",
+                      "variantId",
+                      "cachedFromRunId",
                       "tags",
                       "candidateCount",
                       "hasSynthesis",
-                      "confidence"
+                      "confidence",
+                      "calibratedConfidence"
                     ],
                     "type": "object"
                   }

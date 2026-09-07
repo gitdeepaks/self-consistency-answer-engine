@@ -94,6 +94,45 @@ reason, which is what stops one enormous question from spending a whole month's 
 Runs also carry a wall-clock deadline (`deadlineAt`). A run past it is reaped and failed rather
 than left in flight for ever.
 
+## The answer cache
+
+`POST /v1/runs` may answer a question from an earlier, identical run instead of putting a fresh
+panel to work. A cached answer is a real run with its own id, its own timestamps and its own
+history entry; what it carries in addition is `cachedFromRunId`, pointing at the run that
+actually paid for the model calls.
+
+Two things follow, and both are in your favour:
+
+- **It is fast and it is free.** A cache hit returns in milliseconds and consumes no tokens, so
+  it does not count against your monthly token or cost allowance. It does count as a run.
+- **It is honest about itself.** The response carries `X-Sce-Cache: exact`, `near` or `miss`,
+  and the run's `cachedFromRunId` records the same fact durably. The header is informational —
+  never branch on it for correctness — while the field is part of the run.
+
+A `near` hit means the question was *reworded*, not identical: it matched an earlier prompt on
+both a fingerprint comparison and a token-overlap threshold. Deployments can turn near matching
+off; exact matching is on by default.
+
+### Asking for a fresh answer
+
+Send the standard header:
+
+```http
+POST /v1/runs HTTP/1.1
+Cache-Control: no-store
+```
+
+`no-cache` is accepted as the same instruction. Use it when freshness matters more than cost —
+a question about something that changes, or a measurement of the engine rather than a use of
+it. Our own evaluation harness sends it on every run, because grading a cached answer would
+measure the cache rather than the models.
+
+In the SDK:
+
+```ts
+await sce.ask("What changed in the incident report this morning?", { cache: "no-store" })
+```
+
 ## Conditional reads
 
 `GET /v1/runs/{runId}` returns an `ETag`. A finished run never changes, so send it back:
