@@ -140,3 +140,114 @@ export const releaseKillSwitchInputSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 })
 export type ReleaseKillSwitchInput = z.infer<typeof releaseKillSwitchInputSchema>
+
+/* ------------------------------------------------------- answer quality */
+
+/**
+ * The quality console.
+ *
+ * The operator page for Phase 7's three continuous questions: is the
+ * experiment saying anything yet, is the cache paying for itself, and does the
+ * confidence number mean what it claims. All three are cross-tenant by
+ * construction — an engine is not a workspace — which is why they live behind
+ * the same install-admin guard as everything else in this module.
+ *
+ * Every number here is an aggregate. No prompt and no answer body crosses this
+ * boundary: an operator who needs to read one run reads it through the run
+ * inspector, which is tenant-scoped and audited.
+ */
+
+export const experimentArmSchema = z.object({
+  variantId: z.string().nullable(),
+  panelId: z.string().nullable(),
+  runs: z.number().int().nonnegative(),
+  completed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** Runs served from the cache. They cost nothing and judge nothing. */
+  cached: z.number().int().nonnegative(),
+  meanConfidence: z.number().nullable(),
+  meanCalibratedConfidence: z.number().nullable(),
+  meanLatencyMs: z.number().nullable(),
+  costMicroCents: z.number().int().nonnegative(),
+  thumbsUp: z.number().int().nonnegative(),
+  thumbsDown: z.number().int().nonnegative(),
+})
+export type ExperimentArm = z.infer<typeof experimentArmSchema>
+
+export const adminExperimentSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  hypothesis: z.string(),
+  startsAt: z.string(),
+  endsAt: z.string().nullable(),
+  /** False once the window has closed; the arms are still reported. */
+  active: z.boolean(),
+  arms: z.array(experimentArmSchema),
+})
+export type AdminExperiment = z.infer<typeof adminExperimentSchema>
+
+export const adminCacheSchema = z.object({
+  runs: z.number().int().nonnegative(),
+  cacheHits: z.number().int().nonnegative(),
+  hitRate: z.number().min(0).max(1),
+  meanGeneratedCostMicroCents: z.number().int().nonnegative(),
+  /** Hits times that mean. An estimate, and named as one. */
+  estimatedSavedMicroCents: z.number().int().nonnegative(),
+})
+export type AdminCache = z.infer<typeof adminCacheSchema>
+
+export const adminReliabilityBinSchema = z.object({
+  lower: z.number(),
+  upper: z.number(),
+  count: z.number().int().nonnegative(),
+  meanConfidence: z.number(),
+  accuracy: z.number(),
+})
+
+/**
+ * How well the confidence number tracked what people thought of the answer.
+ *
+ * The label is a thumbs-up, which is a *weak* signal for correctness — people
+ * click it for tone and speed too — so this is the continuously-available
+ * approximation, not the judged measurement. The eval harness produces the
+ * real one against the golden set, and the console says which is which.
+ */
+export const adminCalibrationSchema = z.object({
+  sampleSize: z.number().int().nonnegative(),
+  expectedCalibrationError: z.number(),
+  brierScore: z.number(),
+  baseRate: z.number(),
+  bins: z.array(adminReliabilityBinSchema),
+})
+export type AdminCalibration = z.infer<typeof adminCalibrationSchema>
+
+export const adminPanelSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  promptSetId: z.string(),
+  /** Provider and model of each seat, in panel order. */
+  seats: z.array(z.object({ provider: z.string(), label: z.string(), model: z.string() })),
+  evaluator: z.object({ provider: z.string(), model: z.string() }),
+  /** True for the panel this install answers with when no experiment applies. */
+  isDefault: z.boolean(),
+})
+export type AdminPanel = z.infer<typeof adminPanelSchema>
+
+export const adminQualitySchema = z.object({
+  windowDays: z.number().int().positive(),
+  panels: z.array(adminPanelSchema),
+  experiments: z.array(adminExperimentSchema),
+  cache: adminCacheSchema,
+  calibration: adminCalibrationSchema,
+  /** The prompt sets this build knows, so a run's id can be read as a name. */
+  promptSets: z.array(z.object({ id: z.string(), summary: z.string(), introducedAt: z.string() })),
+  generatedAt: z.string(),
+})
+export type AdminQuality = z.infer<typeof adminQualitySchema>
+
+/** `?days=` on the quality console. */
+export const adminQualityQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(14),
+})
+export type AdminQualityQuery = z.infer<typeof adminQualityQuerySchema>

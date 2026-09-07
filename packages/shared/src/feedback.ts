@@ -59,6 +59,39 @@ export function describeFeedbackReason(reason: FeedbackReason): string {
   }
 }
 
+/**
+ * Where a verdict has got to in the eval triage queue.
+ *
+ * A thumbs-down is a lead, not a conclusion. Somebody has to read it and decide
+ * whether the answer really was wrong — and that decision is the thing worth
+ * recording, because an untriaged pile of complaints is not a dataset either.
+ *
+ *   `open`       nobody has looked at it yet;
+ *   `accepted`   a real failure, and worth a golden-set entry;
+ *   `dismissed`  the answer was fine, or the report is unusable;
+ *   `promoted`   an eval case has been written from it — the terminal state.
+ *
+ * Lowercase to match `rating` and `reason` above: these three enums are read
+ * together in the same queue, and a mixed-case family reads as an accident.
+ */
+export const feedbackTriageStatusSchema = z.enum(["open", "accepted", "dismissed", "promoted"])
+export type FeedbackTriageStatus = z.infer<typeof feedbackTriageStatusSchema>
+
+export function describeFeedbackTriageStatus(status: FeedbackTriageStatus): string {
+  switch (status) {
+    case "open":
+      return "Not yet reviewed"
+    case "accepted":
+      return "Confirmed failure"
+    case "dismissed":
+      return "Not a failure"
+    case "promoted":
+      return "Added to the eval set"
+    default:
+      return assertNever(status, "describeFeedbackTriageStatus")
+  }
+}
+
 export const runFeedbackSchema = z.object({
   id: z.string(),
   runId: z.string(),
@@ -67,6 +100,13 @@ export const runFeedbackSchema = z.object({
   rating: feedbackRatingSchema,
   reason: feedbackReasonSchema.nullable(),
   note: z.string().nullable(),
+  /** Where this verdict has got to in triage. `open` until somebody reads it. */
+  triageStatus: feedbackTriageStatusSchema,
+  triagedAt: z.string().nullable(),
+  /** The reviewer, not the person who left the verdict. */
+  triagedByUserId: z.string().nullable(),
+  /** What the reviewer concluded — the sentence the golden-set entry is built from. */
+  triageNote: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -95,3 +135,46 @@ export const feedbackSummarySchema = z.object({
   mine: runFeedbackSchema.nullable(),
 })
 export type FeedbackSummary = z.infer<typeof feedbackSummarySchema>
+
+/**
+ * A triage decision.
+ *
+ * Separate from `submitFeedbackInput` because it is a different act by a
+ * different person: the customer says an answer was wrong, and somebody on the
+ * team decides whether it was. Conflating the two would let a reviewer's
+ * conclusion overwrite the report it was drawn from.
+ */
+export const triageFeedbackInputSchema = z.object({
+  status: feedbackTriageStatusSchema,
+  note: z.string().trim().min(1).max(2000).optional(),
+})
+export type TriageFeedbackInput = z.infer<typeof triageFeedbackInputSchema>
+
+/** Filters on the triage queue. Defaults to the queue somebody actually works. */
+export const feedbackQueueQuerySchema = z.object({
+  rating: feedbackRatingSchema.default("down"),
+  status: feedbackTriageStatusSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+})
+export type FeedbackQueueQuery = z.infer<typeof feedbackQueueQuerySchema>
+
+/**
+ * One row of the triage queue.
+ *
+ * Carries enough of the run to judge the verdict without a second request — the
+ * prompt that was asked, what the engine said, and how sure it claimed to be.
+ * The confidence is here because "wrong, and confident about it" is the
+ * category worth reading first, and it is the pairing Phase 7's calibration
+ * work is built on.
+ */
+export const feedbackTriageEntrySchema = z.object({
+  feedback: runFeedbackSchema,
+  runId: z.string(),
+  runPrompt: z.string(),
+  runStatus: z.string(),
+  runCreatedAt: z.string(),
+  confidence: z.number().nullable(),
+  panelId: z.string().nullable(),
+  promptSetId: z.string().nullable(),
+})
+export type FeedbackTriageEntry = z.infer<typeof feedbackTriageEntrySchema>

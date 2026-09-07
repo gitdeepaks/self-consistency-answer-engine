@@ -87,9 +87,27 @@ export function resolvePanelAvailability(
  * stronger model than the panel member from the same vendor, and that
  * distinction has to survive configuration.
  */
-export function resolveEvaluatorAvailability(env: EnvSource = process.env): ProviderAvailability {
-  const modelId = read(env, EVALUATOR.modelEnv) ?? EVALUATOR.defaultModel
-  return resolveAvailability(EVALUATOR.provider, modelId, env)
+export function resolveEvaluatorAvailability(
+  env: EnvSource = process.env,
+  /**
+   * The panel's own evaluator, when a run named a panel that pins one.
+   *
+   * Swapping the evaluator is one of the experiments Phase 7 exists to run —
+   * "does a different judge score differently" is a question about the product
+   * thesis, not a configuration detail — so a panel may override both halves.
+   * The unpinned model of a *different* provider falls to that provider's
+   * default rather than to `EVALUATOR_MODEL`, which names a model that provider
+   * does not have.
+   */
+  override?: { provider: ProviderId; model: string | null },
+): ProviderAvailability {
+  const provider = override?.provider ?? EVALUATOR.provider
+  const modelId =
+    override?.model ??
+    (provider === EVALUATOR.provider
+      ? (read(env, EVALUATOR.modelEnv) ?? EVALUATOR.defaultModel)
+      : PROVIDERS[provider].defaultModel)
+  return resolveAvailability(provider, modelId, env)
 }
 
 export function toHealth(availability: ProviderAvailability): ProviderHealth {

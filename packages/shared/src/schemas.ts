@@ -124,6 +124,16 @@ export const listQueriesInputSchema = z.object({
 
 export const candidateReviewSchema = z.object({
   provider: providerIdSchema,
+  /**
+   * The candidate this review is of, exactly as the evaluator was shown it.
+   *
+   * `provider` alone stopped identifying a candidate when a panel became able
+   * to draw two samples from one model (see `panels.ts`): "OpenAI" is then two
+   * different answers with two different scores. The label is what the
+   * evaluator is asked to echo back, and it is what every surface aligns
+   * reviews to candidates by.
+   */
+  label: z.string().describe("The candidate label shown in the prompt, echoed back verbatim."),
   score: z
     .number()
     .min(0)
@@ -196,7 +206,18 @@ export const synthesisSchema = z.object({
   agreements: z.array(z.string()),
   disagreements: z.array(z.string()),
   reviews: z.array(candidateReviewSchema),
+  /** The evaluator's own number, exactly as it reported it. Never rewritten. */
   confidence: z.number(),
+  /**
+   * The same number after the fitted calibration map, or null when the build
+   * had none configured.
+   *
+   * Both are stored, for ever. The raw value is the evidence a future
+   * calibration is re-fitted from, and the corrected value is the one a person
+   * should read — so replacing one with the other would destroy the ability to
+   * ever check the correction that was applied.
+   */
+  calibratedConfidence: z.number().nullable(),
   latencyMs: z.number().nullable(),
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
@@ -223,6 +244,24 @@ export const runSchema = z.object({
   deadlineAt: z.string().nullable(),
   canceledAt: z.string().nullable(),
   /**
+   * The prompt set this run was produced with — see `prompts.ts`.
+   *
+   * Null only for runs created before prompts were versioned. Everything since
+   * carries the id, which is what makes any stored answer traceable to the
+   * exact wording that produced it.
+   */
+  promptSetId: z.string().nullable(),
+  /** The panel configuration that was used, or null for a pre-Phase-7 run. */
+  panelId: z.string().nullable(),
+  /** The experiment this run is a sample of, and its arm. Null outside one. */
+  experimentId: z.string().nullable(),
+  variantId: z.string().nullable(),
+  /**
+   * The run this answer was copied from, when it was served from the answer
+   * cache instead of being generated. Null for a run that paid for its models.
+   */
+  cachedFromRunId: z.string().nullable(),
+  /**
    * Free-form labels for organising history. Always present, possibly empty —
    * never optional, so no client has to distinguish "untagged" from "this build
    * does not know about tags".
@@ -246,6 +285,8 @@ export const runSummarySchema = runSchema
      * colour a badge — twenty extra requests to render one screen.
      */
     confidence: z.number().nullable(),
+    /** The calibrated reading of the same number, hoisted for the same reason. */
+    calibratedConfidence: z.number().nullable(),
   });
 export type RunSummary = z.infer<typeof runSummarySchema>;
 
@@ -271,10 +312,16 @@ export function toRunSummary(run: Run): RunSummary {
     completedAt: run.completedAt,
     deadlineAt: run.deadlineAt,
     canceledAt: run.canceledAt,
+    promptSetId: run.promptSetId,
+    panelId: run.panelId,
+    experimentId: run.experimentId,
+    variantId: run.variantId,
+    cachedFromRunId: run.cachedFromRunId,
     tags: run.tags,
     candidateCount: run.candidates.length,
     hasSynthesis: run.synthesis !== null,
     confidence: run.synthesis?.confidence ?? null,
+    calibratedConfidence: run.synthesis?.calibratedConfidence ?? null,
   };
 }
 

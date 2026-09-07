@@ -33,10 +33,16 @@ const RUN: RunSummary = {
   completedAt: "2026-09-05T10:00:18.400Z",
   deadlineAt: null,
   canceledAt: null,
+  promptSetId: "prompts.v1",
+  panelId: "trio",
+  experimentId: null,
+  variantId: null,
+  cachedFromRunId: null,
   tags: ["physics"],
   candidateCount: 3,
   hasSynthesis: true,
   confidence: 0.86,
+  calibratedConfidence: 0.79,
 }
 
 const VIOLATION: QuotaViolation = {
