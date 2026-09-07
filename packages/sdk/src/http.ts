@@ -7,7 +7,7 @@ import {
   readRateLimit,
   toApiError,
 } from "./errors.ts"
-import { REQUEST_ID_HEADER, type RateLimitState } from "./vendor/shared.ts"
+import { CACHE_CONTROL_HEADER, REQUEST_ID_HEADER, type RateLimitState } from "./vendor/shared.ts"
 
 /**
  * The transport: one request, retried sensibly, parsed strictly.
@@ -41,6 +41,15 @@ export interface RequestOptions {
   requestId?: string | undefined
   /** Overrides the client-wide timeout for this call. */
   timeoutMs?: number | undefined
+  /**
+   * `"no-store"` refuses a cached answer and pays for a fresh panel run.
+   *
+   * Only `POST /runs` reads it. Use it when the answer's freshness matters more
+   * than its cost — a question about something that changes, or a measurement
+   * of the engine rather than a use of it. The default reuses a recent answer
+   * to the same question, which is what makes repeated questions cheap.
+   */
+  cache?: "default" | "no-store" | undefined
 }
 
 /**
@@ -222,6 +231,9 @@ export class Http {
     }
     if (attempt.options.requestId !== undefined) {
       headers[REQUEST_ID_HEADER] = attempt.options.requestId
+    }
+    if (attempt.options.cache === "no-store") {
+      headers[CACHE_CONTROL_HEADER] = "no-store"
     }
 
     const response = await this.#config.fetch(url, {

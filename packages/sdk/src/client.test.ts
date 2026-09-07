@@ -34,6 +34,11 @@ const RUN: Run = {
   completedAt: null,
   deadlineAt: null,
   canceledAt: null,
+  promptSetId: "prompts.v1",
+  panelId: "trio",
+  experimentId: null,
+  variantId: null,
+  cachedFromRunId: null,
   tags: [],
   candidates: [],
   synthesis: null,
@@ -51,10 +56,16 @@ const SUMMARY: RunSummary = {
   completedAt: "2026-09-05T10:00:01.000Z",
   deadlineAt: null,
   canceledAt: null,
+  promptSetId: "prompts.v1",
+  panelId: "trio",
+  experimentId: null,
+  variantId: null,
+  cachedFromRunId: null,
   tags: [],
   candidateCount: 3,
   hasSynthesis: true,
   confidence: 0.9,
+  calibratedConfidence: 0.84,
 }
 
 interface Call {

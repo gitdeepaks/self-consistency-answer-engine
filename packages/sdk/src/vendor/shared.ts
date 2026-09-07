@@ -18,6 +18,7 @@
  * makes one bundle work in Node, Bun, Deno, Cloudflare Workers and a browser.
  */
 
+export * from "../../../shared/src/answer-cache.ts"
 export * from "../../../shared/src/api-error.ts"
 export * from "../../../shared/src/assert.ts"
 export * from "../../../shared/src/billing.ts"
