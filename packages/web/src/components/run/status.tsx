@@ -110,21 +110,48 @@ export function ProviderTag({
  * a measured probability. Presenting an uncalibrated number as though it were
  * one is how a product teaches people to trust something it has not earned.
  */
+/**
+ * The confidence, and — once this build has measured its own — the corrected
+ * reading of it.
+ *
+ * The calibrated number is the one shown large, because it is the one that
+ * means what it says: of the answers reported at 80% after correction, about
+ * 80% were judged correct. The raw value stays visible beside it rather than
+ * being replaced, so a number that moved a long way is something a reader can
+ * see rather than something the product quietly did to them.
+ *
+ * With no calibration configured, this renders exactly as it did before and
+ * says so — an uncalibrated confidence presented as a probability is the
+ * failure mode this component exists to avoid.
+ */
 export function ConfidenceMeter({
   value,
+  calibrated,
   className,
 }: {
   value: number
+  /** Null when this build has not fitted a calibration map. */
+  calibrated?: number | null
   className?: string
 }): ReactElement {
-  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100)
+  const shown = calibrated ?? value
+  const percent = Math.round(Math.max(0, Math.min(1, shown)) * 100)
+  const rawPercent = Math.round(Math.max(0, Math.min(1, value)) * 100)
   const tone = percent >= 75 ? "bg-success" : percent >= 50 ? "bg-warning" : "bg-danger"
+  const isCalibrated = calibrated !== undefined && calibrated !== null
 
   return (
     <div className={cn("space-y-1.5", className)}>
       <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs font-medium text-ink-muted">Evaluator confidence</span>
-        <span className="font-mono text-sm text-ink">{percent}%</span>
+        <span className="text-xs font-medium text-ink-muted">
+          {isCalibrated ? "Confidence" : "Evaluator confidence"}
+        </span>
+        <span className="font-mono text-sm text-ink">
+          {percent}%
+          {isCalibrated && percent !== rawPercent && (
+            <span className="ml-1.5 text-ink-faint">(self-reported {rawPercent}%)</span>
+          )}
+        </span>
       </div>
       <div
         className="h-1.5 overflow-hidden rounded-full bg-surface-sunken"
@@ -132,12 +159,14 @@ export function ConfidenceMeter({
         aria-valuenow={percent}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="Evaluator confidence"
+        aria-label="Confidence in this answer"
       >
         <div className={cn("h-full rounded-full transition-all", tone)} style={{ width: `${percent}%` }} />
       </div>
       <p className="text-xs text-ink-faint">
-        Self-reported by the evaluator, not yet calibrated against measured accuracy.
+        {isCalibrated
+          ? "Corrected against measured accuracy on the evaluation set: of answers shown at this level, about this share were judged correct."
+          : "Self-reported by the evaluator, not yet calibrated against measured accuracy."}
       </p>
     </div>
   )

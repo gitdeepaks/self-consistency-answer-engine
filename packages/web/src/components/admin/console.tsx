@@ -1,6 +1,13 @@
 "use client"
 
-import type { AdminOverview, AdminTenant, DeadLetterView, KillSwitch } from "@sce/shared"
+import type {
+  AdminExperiment,
+  AdminOverview,
+  AdminQuality,
+  AdminTenant,
+  DeadLetterView,
+  KillSwitch,
+} from "@sce/shared"
 import { AlertTriangle, Loader2, RefreshCw, Search } from "lucide-react"
 import Link from "next/link"
 import { useState, type FormEvent, type ReactElement } from "react"
@@ -27,7 +34,7 @@ import { count, money, when } from "@/lib/format"
  * terminal rather than a button somebody can hit by accident.
  */
 
-type TabId = "overview" | "tenants" | "dlq"
+type TabId = "overview" | "tenants" | "quality" | "dlq"
 
 export function AdminConsole({ initial }: { initial: AdminOverview }): ReactElement {
   const api = useApi()
@@ -47,6 +54,7 @@ export function AdminConsole({ initial }: { initial: AdminOverview }): ReactElem
   const tabs: readonly TabDefinition<TabId>[] = [
     { id: "overview", label: "Overview" },
     { id: "tenants", label: "Workspaces", hint: count(overview.tenantCount) },
+    { id: "quality", label: "Quality" },
     {
       id: "dlq",
       label: "Dead letters",
@@ -74,6 +82,7 @@ export function AdminConsole({ initial }: { initial: AdminOverview }): ReactElem
       <Tabs tabs={tabs} active={tab} onChange={setTab}>
         {tab === "overview" && <Overview overview={overview} onChange={setOverview} />}
         {tab === "tenants" && <Tenants />}
+        {tab === "quality" && <Quality />}
         {tab === "dlq" && <DeadLetters onReplayed={() => void refresh()} />}
       </Tabs>
     </div>
@@ -410,6 +419,285 @@ function Tenants(): ReactElement {
           </PanelBody>
         </Panel>
       )}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- quality */
+
+/**
+ * The answer-quality panel.
+ *
+ * Three questions an operator asks about the engine rather than about a
+ * customer: is the experiment saying anything yet, is the cache paying for
+ * itself, and does the confidence number mean anything. Every figure is an
+ * aggregate across the install — no prompt and no answer body reaches this
+ * page, which is why it can be cross-tenant at all.
+ */
+function Quality(): ReactElement {
+  const api = useApi()
+  const [days, setDays] = useState(14)
+  const [report, setReport] = useState<AdminQuality | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async (window: number): Promise<void> => {
+    try {
+      setReport(await api.adminQuality(window))
+      setError(null)
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : "Could not load the quality report")
+    }
+  }
+
+  if (report === null) {
+    return (
+      <div className="space-y-3">
+        {error !== null && <ErrorState detail={error} />}
+        <EmptyState
+          title="Answer quality"
+          description="Experiment arms, answer-cache savings, and whether the confidence number tracks reality."
+          action={
+            <Button variant="secondary" onClick={() => void load(days)}>
+              Load
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
+
+  const cache = report.cache
+
+  return (
+    <div className="space-y-5">
+      {error !== null && <ErrorState detail={error} />}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {[7, 14, 30, 90].map((window) => (
+          <Button
+            key={window}
+            size="sm"
+            variant={days === window ? "primary" : "secondary"}
+            onClick={() => {
+              setDays(window)
+              void load(window)
+            }}
+          >
+            {window}d
+          </Button>
+        ))}
+        <span className="text-xs text-ink-faint">
+          generated {when(report.generatedAt)}
+        </span>
+      </div>
+
+      <Panel>
+        <PanelHeader
+          title="Answer cache"
+          description="Runs served from an earlier answer instead of a fresh panel."
+        />
+        <PanelBody>
+          <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Figure label="Hit rate" value={`${(cache.hitRate * 100).toFixed(1)}%`} />
+            <Figure label="Hits" value={count(cache.cacheHits)} />
+            <Figure label="Runs" value={count(cache.runs)} />
+            <Figure
+              label="Estimated saving"
+              value={money(cache.estimatedSavedMicroCents)}
+              hint={`at ${money(cache.meanGeneratedCostMicroCents)} per generated run`}
+            />
+          </dl>
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHeader
+          title="Confidence calibration"
+          description="Claimed confidence against the thumbs people actually gave. A weak signal, continuously available — the judged measurement comes from the eval harness."
+        />
+        <PanelBody className="space-y-3">
+          <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Figure
+              label="Calibration error"
+              value={report.calibration.expectedCalibrationError.toFixed(3)}
+            />
+            <Figure label="Brier score" value={report.calibration.brierScore.toFixed(3)} />
+            <Figure label="Base rate" value={`${(report.calibration.baseRate * 100).toFixed(1)}%`} />
+            <Figure label="Rated answers" value={count(report.calibration.sampleSize)} />
+          </dl>
+
+          {report.calibration.sampleSize === 0 ? (
+            <p className="text-sm text-ink-muted">
+              Nobody has rated an answer in this window, so there is nothing to calibrate against.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {report.calibration.bins
+                .filter((bin) => bin.count > 0)
+                .map((bin) => (
+                  <div key={bin.lower} className="flex items-center gap-3 text-xs">
+                    <span className="w-20 font-mono text-ink-faint">
+                      {bin.lower.toFixed(1)}–{bin.upper.toFixed(1)}
+                    </span>
+                    <span className="w-14 text-right text-ink-muted">{count(bin.count)}</span>
+                    <div className="flex-1">
+                      <Bar label="claimed" value={bin.meanConfidence} tone="bg-ink-faint" />
+                      <Bar label="actual" value={bin.accuracy} tone="bg-accent" />
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHeader
+          title="Experiments"
+          description="Panel A/B tests, assigned by workspace so one customer sees one consistent panel."
+        />
+        <PanelBody className="space-y-4">
+          {report.experiments.length === 0 ? (
+            <p className="text-sm text-ink-muted">
+              No experiments are configured. Set <code>PANEL_EXPERIMENTS</code> on the API to start
+              one.
+            </p>
+          ) : (
+            report.experiments.map((experiment) => (
+              <ExperimentArms key={experiment.id} experiment={experiment} />
+            ))
+          )}
+        </PanelBody>
+      </Panel>
+
+      <Panel>
+        <PanelHeader
+          title="Panels"
+          description="Every registered panel, resolved to the models this install would actually call."
+        />
+        <PanelBody className="space-y-3">
+          {report.panels.map((panel) => (
+            <div key={panel.id} className="rounded-lg border border-line p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-ink">{panel.label}</span>
+                <span className="font-mono text-xs text-ink-faint">{panel.id}</span>
+                {panel.isDefault && <Badge tone="success">default</Badge>}
+                <Badge tone="neutral">{panel.promptSetId}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-ink-muted">{panel.description}</p>
+              <p className="mt-2 font-mono text-xs text-ink-faint">
+                {panel.seats.map((seat) => `${seat.label} (${seat.model})`).join(" · ")} → judged by{" "}
+                {panel.evaluator.model}
+              </p>
+            </div>
+          ))}
+        </PanelBody>
+      </Panel>
+    </div>
+  )
+}
+
+/**
+ * One number in a metric row.
+ *
+ * Distinct from `Stat` below, which wraps its number in its own Panel for the
+ * overview grid. These sit inside a panel already, so a second border around
+ * each would read as four cards inside one card.
+ */
+function Figure({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint?: string
+}): ReactElement {
+  return (
+    <div>
+      <dt className="text-xs uppercase tracking-wide text-ink-faint">{label}</dt>
+      <dd className="mt-0.5 text-lg font-semibold tabular-nums text-ink">{value}</dd>
+      {hint !== undefined && <p className="text-xs text-ink-faint">{hint}</p>}
+    </div>
+  )
+}
+
+function Bar({ label, value, tone }: { label: string; value: number; tone: string }): ReactElement {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-14 text-ink-faint">{label}</span>
+      <div className="h-1.5 flex-1 rounded-full bg-surface-sunken">
+        <div
+          className={`h-1.5 rounded-full ${tone}`}
+          style={{ width: `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%` }}
+        />
+      </div>
+      <span className="w-10 text-right tabular-nums text-ink-muted">
+        {(value * 100).toFixed(0)}%
+      </span>
+    </div>
+  )
+}
+
+/**
+ * One experiment's arms, side by side.
+ *
+ * The comparison a reader wants is between rows, so the arms are a table rather
+ * than a set of cards — and every column is per-arm rather than a total,
+ * because a total across arms measures nothing.
+ */
+function ExperimentArms({ experiment }: { experiment: AdminExperiment }): ReactElement {
+  return (
+    <div className="rounded-lg border border-line">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
+        <span className="font-medium text-ink">{experiment.label}</span>
+        <span className="font-mono text-xs text-ink-faint">{experiment.id}</span>
+        <Badge tone={experiment.active ? "success" : "neutral"}>
+          {experiment.active ? "running" : "ended"}
+        </Badge>
+      </div>
+      <p className="px-4 pt-3 text-sm text-ink-muted">{experiment.hypothesis}</p>
+
+      <div className="overflow-x-auto px-4 pb-4 pt-3">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-ink-faint">
+              <th className="pb-2 pr-4 font-medium">Arm</th>
+              <th className="pb-2 pr-4 font-medium">Panel</th>
+              <th className="pb-2 pr-4 text-right font-medium">Runs</th>
+              <th className="pb-2 pr-4 text-right font-medium">Failed</th>
+              <th className="pb-2 pr-4 text-right font-medium">Cached</th>
+              <th className="pb-2 pr-4 text-right font-medium">Confidence</th>
+              <th className="pb-2 pr-4 text-right font-medium">Thumbs</th>
+              <th className="pb-2 text-right font-medium">Cost</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {experiment.arms.map((arm) => (
+              <tr key={arm.variantId ?? "unassigned"}>
+                <td className="py-2 pr-4 font-mono text-xs text-ink">{arm.variantId ?? "—"}</td>
+                <td className="py-2 pr-4 font-mono text-xs text-ink-muted">{arm.panelId ?? "—"}</td>
+                <td className="py-2 pr-4 text-right tabular-nums">{count(arm.runs)}</td>
+                <td className="py-2 pr-4 text-right tabular-nums">{count(arm.failed)}</td>
+                <td className="py-2 pr-4 text-right tabular-nums">{count(arm.cached)}</td>
+                <td className="py-2 pr-4 text-right tabular-nums">
+                  {arm.meanConfidence === null ? "—" : `${(arm.meanConfidence * 100).toFixed(0)}%`}
+                </td>
+                <td className="py-2 pr-4 text-right tabular-nums text-ink-muted">
+                  {arm.thumbsUp} / {arm.thumbsDown}
+                </td>
+                <td className="py-2 text-right font-mono text-xs">{money(arm.costMicroCents)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {experiment.arms.every((arm) => arm.runs === 0) && (
+          <p className="pt-3 text-sm text-ink-muted">
+            No runs have landed in this experiment yet. If that persists, check that the API is
+            running with this experiment configured.
+          </p>
+        )}
+      </div>
     </div>
   )
 }

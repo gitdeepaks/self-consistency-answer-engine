@@ -82,14 +82,21 @@ export function AnswerView({
           description="The evaluator's read on each draft, and what it took from them."
         />
         <PanelBody className="space-y-4">
-          <ConfidenceMeter value={synthesis.confidence} className="max-w-sm" />
+          <ConfidenceMeter
+            value={synthesis.confidence}
+            calibrated={synthesis.calibratedConfidence}
+            className="max-w-sm"
+          />
 
           <div className="space-y-3">
             {synthesis.reviews.map((review) => {
-              const candidate = candidates.find((entry) => entry.provider === review.provider)
+              // Matched on the label, not the provider: a panel can draw two
+              // samples from one model, and both would otherwise resolve to the
+              // same candidate — and render under the same React key.
+              const candidate = candidates.find((entry) => entry.label === review.label)
               return (
                 <div
-                  key={review.provider}
+                  key={review.label}
                   className="rounded-lg border border-line p-3"
                   style={{ borderLeftWidth: 3, borderLeftColor: providerColor(review.provider) }}
                 >

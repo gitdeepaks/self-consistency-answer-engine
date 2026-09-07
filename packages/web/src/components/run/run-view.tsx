@@ -8,6 +8,7 @@ import { AnswerView, CandidateComparison } from "@/components/run/answer"
 import { CandidatePanel } from "@/components/run/candidate-panel"
 import { FeedbackControl } from "@/components/run/feedback"
 import { ShareDialog } from "@/components/run/share-dialog"
+import Link from "next/link"
 import { RunStatusBadge } from "@/components/run/status"
 import { TagEditor } from "@/components/run/tags"
 import { Button } from "@/components/ui/button"
@@ -113,6 +114,20 @@ export function RunView({ initialRun }: { initialRun: Run }): ReactElement {
 
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <RunStatusBadge status={run.status} />
+            {/*
+              A cached answer is a real answer, and saying where it came from is
+              the honest half of serving one instantly: the link goes to the run
+              that actually paid for the model calls.
+            */}
+            {run.cachedFromRunId !== null && (
+              <Link
+                href={`/runs/${run.cachedFromRunId}`}
+                className="rounded-full border border-line px-2 py-0.5 text-xs text-ink-muted hover:text-ink"
+                title="This answer was reused from an earlier identical question"
+              >
+                from cache
+              </Link>
+            )}
             <ConnectionPip state={connection} live={stream.live} />
 
             {!finished && (

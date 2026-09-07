@@ -19,6 +19,11 @@ const COMPLETED_RUN: Run = {
   completedAt: new Date().toISOString(),
   deadlineAt: null,
   canceledAt: null,
+  promptSetId: "prompts.v1",
+  panelId: "trio",
+  experimentId: null,
+  variantId: null,
+  cachedFromRunId: null,
   tags: [],
   candidates: [
     {
@@ -68,10 +73,17 @@ const COMPLETED_RUN: Run = {
     agreements: ["Scattering explains the colour"],
     disagreements: ["Only one named Rayleigh scattering"],
     reviews: [
-      { provider: "openai", score: 8, strengths: ["names the mechanism"], weaknesses: ["terse"] },
-      { provider: "anthropic", score: 9, strengths: ["precise"], weaknesses: [] },
+      {
+        provider: "openai",
+        label: "OpenAI",
+        score: 8,
+        strengths: ["names the mechanism"],
+        weaknesses: ["terse"],
+      },
+      { provider: "anthropic", label: "Claude", score: 9, strengths: ["precise"], weaknesses: [] },
     ],
     confidence: 0.92,
+    calibratedConfidence: 0.85,
     latencyMs: 2000,
     inputTokens: 500,
     outputTokens: 300,

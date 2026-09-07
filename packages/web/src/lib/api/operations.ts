@@ -95,6 +95,7 @@ export interface Api {
    */
   whoamiOperator(): Promise<z.infer<typeof e.adminWhoamiEnvelope>>
   adminOverview(): Promise<z.infer<typeof e.adminOverviewEnvelope>>
+  adminQuality(days?: number): Promise<z.infer<typeof e.adminQualityEnvelope>>
   adminTenants(query: { q?: string; days?: number }): Promise<z.infer<typeof e.adminTenantsEnvelope>>
   adminRun(id: string): Promise<z.infer<typeof e.adminRunEnvelope>>
   adminDeadLetters(): Promise<z.infer<typeof e.adminDlqEnvelope>["deadLetters"]>
@@ -266,6 +267,13 @@ export function createApi(getToken: TokenProvider): Api {
     async adminOverview() {
       const res = await client.api.admin.overview.$get()
       return unwrap(res, e.adminOverviewEnvelope, "Loading the operations overview")
+    },
+
+    async adminQuality(days) {
+      const res = await client.api.admin.quality.$get({
+        query: days === undefined ? {} : { days: String(days) },
+      })
+      return unwrap(res, e.adminQualityEnvelope, "Loading the quality report")
     },
 
     async adminTenants(query) {

@@ -1,6 +1,7 @@
 import {
   accessSchema,
   adminOverviewSchema,
+  adminQualitySchema,
   adminTenantSchema,
   apiKeyCreatedSchema,
   apiKeySummarySchema,
@@ -123,6 +124,7 @@ export const adminRunEnvelope = z.object({
   calls: z.number().int().nonnegative(),
 })
 export const adminDlqEnvelope = z.object({ deadLetters: z.array(deadLetterSchema) })
+export const adminQualityEnvelope = adminQualitySchema
 export const adminReplayEnvelope = z.object({ ok: z.boolean(), replayed: z.boolean() })
 export const adminBudgetEnvelope = z.object({
   killSwitch: killSwitchSchema,

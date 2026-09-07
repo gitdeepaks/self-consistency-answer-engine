@@ -91,12 +91,15 @@ function Analysis({ run }: { run: Run }) {
         <strong>Scorecard</strong>
       </text>
       {synthesis.reviews.map((review) => {
-        const candidate = run.candidates.find((c) => c.provider === review.provider)
+        // By label rather than provider: two samples of one model are two
+        // candidates with two scores, and keying on the provider would show one
+        // of them twice.
+        const candidate = run.candidates.find((c) => c.label === review.label)
         const filled = Math.round(review.score)
         return (
-          <box key={review.provider} flexDirection="column">
+          <box key={review.label} flexDirection="column">
             <box flexDirection="row" gap={1}>
-              <text fg={theme.text}>{(candidate?.label ?? review.provider).padEnd(8)}</text>
+              <text fg={theme.text}>{(candidate?.label ?? review.label).padEnd(8)}</text>
               <text fg={review.score >= 7 ? theme.ok : review.score >= 4 ? theme.warn : theme.err}>
                 {"█".repeat(filled)}
                 {"░".repeat(Math.max(0, 10 - filled))} {review.score.toFixed(1)}/10
