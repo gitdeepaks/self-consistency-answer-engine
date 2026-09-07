@@ -9,12 +9,15 @@ import {
 } from "@sce/db";
 import type { JobMeta } from "@sce/queue";
 import {
+  applyCalibration,
   assertNever,
   describeError,
   isTerminalRunStatus,
+  resolvePanelConfig,
   synthesisOutputSchema,
   type Candidate,
   type CandidateReview,
+  type PanelConfig,
   type Run,
   type SynthesisJob,
 } from "@sce/shared";
@@ -29,7 +32,7 @@ import {
 } from "./context.ts";
 import { workerConfig } from "./env.ts";
 import { emitRunWebhook } from "./webhooks.ts";
-import { EVALUATOR_SYSTEM_PROMPT, buildEvaluatorPrompt } from "./prompts.ts";
+import { buildEvaluatorPrompt, promptsFor } from "./prompts.ts";
 import { resolveEvaluator } from "./providers.ts";
 import { classify, recordProviderOutcome, withBulkhead } from "./resilience.ts";
 
@@ -165,7 +168,15 @@ async function synthesize(
   run: Run,
   candidates: readonly Candidate[],
 ): ReturnType<typeof saveSynthesis> {
-  const evaluator = resolveEvaluator();
+  // The panel names the evaluator, and the prompt set names the wording — both
+  // are properties of the run, not of whatever this worker's environment says
+  // today. An unknown id in either is an error rather than a fallback, for the
+  // same reason: the alternative silently answers the question a different way
+  // than the run recorded.
+  const panel = panelFor(run.panelId);
+  const prompts = promptsFor(run.promptSetId);
+
+  const evaluator = resolveEvaluator(panel);
   if (!evaluator.model) {
     throw new Error(
       evaluator.hint ??
@@ -193,7 +204,7 @@ async function synthesize(
     const result = await withBulkhead(evaluator.spec.id, () =>
       generateText({
         model,
-        system: EVALUATOR_SYSTEM_PROMPT,
+        system: prompts.evaluator.text,
         prompt: buildEvaluatorPrompt(run.prompt, [...candidates]),
         output: Output.object({ schema: synthesisOutputSchema }),
         maxOutputTokens: outputTokenCap,
@@ -219,6 +230,11 @@ async function synthesize(
 
     await recordProviderOutcome(evaluator.spec.id, { ok: true });
 
+    // The raw confidence is stored unchanged and the corrected reading beside
+    // it. Replacing one with the other would make the correction impossible to
+    // ever check — and the map is refitted from exactly this column.
+    const calibration = workerConfig.CONFIDENCE_CALIBRATION;
+
     const synthesis = await saveSynthesis(ctx.tenantId, ctx.runId, {
       model: evaluator.modelId,
       finalAnswer,
@@ -226,6 +242,9 @@ async function synthesize(
       disagreements: output.disagreements,
       reviews: normaliseReviews(output.reviews, candidates),
       confidence: output.confidence,
+      calibratedConfidence:
+        calibration === null ? null : applyCalibration(calibration, output.confidence),
+      calibrationId: calibration?.id ?? null,
       latencyMs: Math.round(performance.now() - startedAt),
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
@@ -261,25 +280,58 @@ async function synthesize(
   }
 }
 
-/** Keep exactly one review per candidate, so a UI can align them 1:1. */
+/**
+ * Keep exactly one review per candidate, so a UI can align them 1:1.
+ *
+ * Matched on the **label**, falling back to the provider. Provider alone stopped
+ * identifying a candidate when a panel became able to draw two samples from one
+ * model: "OpenAI" is then two answers with two different scores, and keying a
+ * map on it silently discards one of them and shows the other twice. The
+ * fallback covers an evaluator that echoed the provider id where a label was
+ * asked for, and consumes each matched review so two candidates from one
+ * provider cannot both fall back onto the same one.
+ */
 function normaliseReviews(
   reviews: readonly CandidateReview[],
   candidates: readonly Candidate[],
 ): CandidateReview[] {
-  const byProvider = new Map(
-    reviews.map((review) => [review.provider, review]),
-  );
-  return candidates.map(
-    (candidate) =>
-      byProvider.get(candidate.provider) ?? {
-        provider: candidate.provider,
-        score: 0,
-        strengths: [],
-        weaknesses: [
-          "The evaluator did not return a review for this candidate.",
-        ],
-      },
-  );
+  const byLabel = new Map(reviews.map((review) => [review.label, review]));
+  const unmatched = reviews.filter((review) => !candidates.some((c) => c.label === review.label));
+
+  return candidates.map((candidate) => {
+    const matched = byLabel.get(candidate.label);
+    if (matched !== undefined) return { ...matched, provider: candidate.provider };
+
+    const index = unmatched.findIndex((review) => review.provider === candidate.provider);
+    const fallback = index === -1 ? undefined : unmatched.splice(index, 1)[0];
+    if (fallback !== undefined) return { ...fallback, label: candidate.label };
+
+    return {
+      provider: candidate.provider,
+      label: candidate.label,
+      score: 0,
+      strengths: [],
+      weaknesses: ["The evaluator did not return a review for this candidate."],
+    };
+  });
+}
+
+/**
+ * The panel a run was created under.
+ *
+ * Null means "created before panels existed", which resolves to the default —
+ * the panel those runs actually used. An unknown id is an error, exactly as an
+ * unknown prompt set is: it means this worker is older than the run.
+ */
+function panelFor(panelId: string | null): PanelConfig {
+  const panel = resolvePanelConfig(panelId);
+  if (panel === null) {
+    throw new Error(
+      `This run was created with panel "${panelId}", which this build does not know. ` +
+        "Deploy the release that introduced it, or re-run the question.",
+    );
+  }
+  return panel;
 }
 
 async function meterEvaluator(

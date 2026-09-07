@@ -27,7 +27,7 @@ import {
   type StopReason,
 } from "./context.ts";
 import { workerConfig } from "./env.ts";
-import { CANDIDATE_SYSTEM_PROMPT } from "./prompts.ts";
+import { promptsFor } from "./prompts.ts";
 import { resolveProvider, type ResolvedProvider } from "./providers.ts";
 import {
   breakerState,
@@ -127,20 +127,36 @@ export async function processCandidateJob(
   await setRunStatus(tenantId, runId, "FANNING_OUT");
   await ctx.emit({ type: "run.status", runId, status: "FANNING_OUT" });
 
+  // Resolved before the call, and allowed to throw: a run whose prompt set this
+  // build does not know must be retried on a worker that does know it, not
+  // answered with whatever wording happens to be current here.
+  const prompts = promptsFor(run.promptSetId);
+
   await withBulkhead(candidate.provider, () =>
-    generate(ctx, meta, candidate, provider, run.prompt, run.temperature),
+    generate(ctx, meta, candidate, provider, {
+      prompt: run.prompt,
+      system: prompts.candidate.text,
+      temperature: run.temperature,
+    }),
   );
 }
 
 /* ----------------------------------------------------------- the model call */
+
+/** What the run says this candidate should be asked, and how. */
+interface Ask {
+  prompt: string;
+  /** The candidate system prompt from the run's own prompt set. */
+  system: string;
+  temperature: number | null;
+}
 
 async function generate(
   ctx: RunContext,
   meta: JobMeta,
   candidate: Candidate,
   provider: ResolvedProvider,
-  prompt: string,
-  temperature: number | null,
+  ask: Ask,
 ): Promise<void> {
   const model = provider.model;
   if (!model) throw new Error("generate called without a model");
@@ -166,12 +182,12 @@ async function generate(
   try {
     const result = streamText({
       model,
-      system: CANDIDATE_SYSTEM_PROMPT,
-      prompt,
+      system: ask.system,
+      prompt: ask.prompt,
       maxOutputTokens: workerConfig.MAX_OUTPUT_TOKENS,
       maxRetries: workerConfig.MAX_RETRIES,
       abortSignal: combined.signal,
-      ...(temperature === null ? {} : { temperature }),
+      ...(ask.temperature === null ? {} : { temperature: ask.temperature }),
     });
 
     // `fullStream` surfaces provider errors as parts rather than rejections, so

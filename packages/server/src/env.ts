@@ -1,4 +1,11 @@
-import { loadRootEnv } from "@sce/shared"
+import {
+  DEFAULT_NEAR_DUPLICATE_OPTIONS,
+  DEFAULT_PANEL_ID,
+  experimentListSchema,
+  loadRootEnv,
+  PANELS,
+  type Experiment,
+} from "@sce/shared"
 import { z } from "zod"
 
 // Must run before anything below reads process.env.
@@ -73,6 +80,59 @@ const clerkWebhookSecretSchema = z
   .trim()
   .regex(/^whsec_[A-Za-z0-9+/=]+$/, "CLERK_WEBHOOK_SIGNING_SECRET must look like whsec_…")
   .optional()
+
+/**
+ * The default panel, by id.
+ *
+ * A panel is code (see `panels.ts`) and this only chooses between the ones that
+ * exist, which is deliberate: the set of panels is reviewed, and picking one is
+ * an operational decision. A name that is not registered fails at boot rather
+ * than at the first run.
+ */
+const panelIdSchema = z
+  .string()
+  .trim()
+  .default(DEFAULT_PANEL_ID)
+  .refine((id) => id in PANELS, {
+    message: `must name a registered panel (${Object.keys(PANELS).join(", ")})`,
+  })
+
+/**
+ * Live A/B experiments, as a JSON array.
+ *
+ * `JSON.parse` returns `unknown`, and this is the sanctioned shape for that:
+ * the value enters as `unknown` and leaves as `Experiment[]` or as a named
+ * configuration error. A malformed experiment list stops the API at boot — the
+ * alternative is a deploy that quietly assigns every tenant to the control arm
+ * and produces an experiment with no treatment group at all.
+ */
+const experimentsEnvSchema: z.ZodType<Experiment[], string | undefined> = z
+  .string()
+  .trim()
+  .optional()
+  .transform((raw, ctx): Experiment[] => {
+    if (raw === undefined || raw.length === 0) return []
+
+    let document: unknown
+    try {
+      document = JSON.parse(raw)
+    } catch {
+      ctx.addIssue({ code: "custom", message: "must be a JSON array of experiments" })
+      return []
+    }
+
+    const parsed = experimentListSchema.safeParse(document)
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: "custom",
+        message: `is not a valid experiment list — ${parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+          .join("; ")}`,
+      })
+      return []
+    }
+    return parsed.data
+  })
 
 const serverEnvSchema = z.object({
   NODE_ENV: nodeEnvSchema,
@@ -165,6 +225,95 @@ const serverEnvSchema = z.object({
    * a dynamic import so the provider SDKs stay out of the API image whenever it
    * is off, which is the normal case.
    */
+  /* --------------------------------------------------- answer quality */
+
+  /** The panel a run uses when no experiment assigns one. */
+  DEFAULT_PANEL: panelIdSchema,
+
+  /** Live panel experiments. See `panels.ts` for the shape and the semantics. */
+  PANEL_EXPERIMENTS: experimentsEnvSchema,
+
+  /**
+   * The answer cache.
+   *
+   * On by default, because a panel run costs three model calls and an evaluator
+   * and the alternative is paying for them again for a question that was
+   * answered an hour ago. Off is a supported configuration and needs no
+   * explanation beyond "we would rather pay": nothing else depends on it.
+   */
+  ANSWER_CACHE_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+
+  /**
+   * How long a cached answer stays reusable.
+   *
+   * A day by default. The trade is entirely about the world changing under a
+   * question: "what is the capital of France" is cacheable for a decade and
+   * "what happened this morning" is cacheable for minutes, and since the engine
+   * cannot tell them apart, the number is a policy an operator sets rather than
+   * something to be clever about.
+   */
+  ANSWER_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(90 * 24 * 60 * 60_000)
+    .default(24 * 60 * 60_000),
+
+  /**
+   * Whether a *reworded* question may hit the cache.
+   *
+   * Separately switchable from the cache itself, because it is a materially
+   * bolder claim: exact matching reuses an answer to a question that is
+   * byte-for-byte the same after normalisation, while this reuses one for a
+   * question judged similar. The thresholds below are what "similar" means, and
+   * both have to be met.
+   */
+  ANSWER_CACHE_NEAR_DUPLICATES: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+
+  /**
+   * Bits of the 64-bit prompt fingerprint that may differ — the prefilter.
+   *
+   * Loose by design. Its job is to bound how many stored prompts are compared
+   * properly, not to decide anything; the two overlap thresholds below are what
+   * decide, and they are exact measures rather than approximations.
+   */
+  ANSWER_CACHE_MAX_HAMMING: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(32)
+    .default(DEFAULT_NEAR_DUPLICATE_OPTIONS.maxHammingDistance),
+
+  /** Word overlap required, 0-1. Catches a substituted word. */
+  ANSWER_CACHE_MIN_JACCARD: z.coerce
+    .number()
+    .min(0.5, "below 0.5 the cache would serve answers to different questions")
+    .max(1)
+    .default(DEFAULT_NEAR_DUPLICATE_OPTIONS.minJaccard),
+
+  /**
+   * Word-triple overlap required, 0-1. Catches a reordering.
+   *
+   * Separate from the word overlap because a reordered question has a word
+   * overlap of exactly 1.0 — "is A better than B" and "is B better than A" are
+   * the same words and opposite questions, and this is the only threshold here
+   * that can tell them apart.
+   */
+  ANSWER_CACHE_MIN_SHINGLE: z.coerce
+    .number()
+    .min(0.5, "below 0.5 the cache would serve answers to reordered questions")
+    .max(1)
+    .default(DEFAULT_NEAR_DUPLICATE_OPTIONS.minShingleJaccard),
+
+  /** Recent runs of the same panel the fingerprint search considers. */
+  ANSWER_CACHE_POOL: positiveInt.max(2_000).default(200),
+
   EMBED_WORKER: z
     .enum(["true", "false"])
     .default("false")
@@ -308,6 +457,22 @@ export const config = {
   runDeadlineMs: env.RUN_DEADLINE_MS,
   runMaxTotalTokens: env.RUN_MAX_TOTAL_TOKENS,
   runMaxCostMicroCents: env.RUN_MAX_COST_MICRO_CENTS,
+  /** Which panel answers a question, and which experiments may override it. */
+  panels: {
+    defaultPanelId: env.DEFAULT_PANEL,
+    experiments: env.PANEL_EXPERIMENTS,
+  },
+  answerCache: {
+    enabled: env.ANSWER_CACHE_ENABLED,
+    ttlMs: env.ANSWER_CACHE_TTL_MS,
+    nearDuplicates: env.ANSWER_CACHE_NEAR_DUPLICATES,
+    poolSize: env.ANSWER_CACHE_POOL,
+    thresholds: {
+      maxHammingDistance: env.ANSWER_CACHE_MAX_HAMMING,
+      minJaccard: env.ANSWER_CACHE_MIN_JACCARD,
+      minShingleJaccard: env.ANSWER_CACHE_MIN_SHINGLE,
+    },
+  },
   billing: {
     gracePeriodDays: env.BILLING_GRACE_PERIOD_DAYS,
   },

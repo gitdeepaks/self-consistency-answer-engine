@@ -1,4 +1,4 @@
-import { loadRootEnv } from "@sce/shared";
+import { calibrationMapSchema, loadRootEnv, type CalibrationMap } from "@sce/shared";
 import { z } from "zod";
 
 // Must run before anything below reads process.env.
@@ -14,6 +14,45 @@ loadRootEnv();
  */
 
 const positiveInt = z.coerce.number().int().positive();
+
+/**
+ * A calibration map supplied as JSON.
+ *
+ * `JSON.parse` is one of the three places `unknown` is unavoidable, and this is
+ * the shape §3 sanctions for it: the value enters as `unknown` and leaves as a
+ * `CalibrationMap` or as a named configuration error. Nothing downstream sees
+ * anything but the domain type, and a map that is malformed — or not monotone,
+ * which `calibrationMapSchema` also refuses — stops the worker at boot instead
+ * of quietly correcting every confidence with garbage.
+ */
+const calibrationEnvSchema: z.ZodType<CalibrationMap | null, string | undefined> = z
+  .string()
+  .trim()
+  .optional()
+  .transform((raw, ctx): CalibrationMap | null => {
+    if (raw === undefined || raw.length === 0) return null;
+
+    let document: unknown;
+    try {
+      document = JSON.parse(raw);
+    } catch {
+      ctx.addIssue({ code: "custom", message: "must be a JSON document" });
+      return null;
+    }
+
+    const parsed = calibrationMapSchema.safeParse(document);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: "custom",
+        message: `is not a calibration map — ${parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+          .join("; ")}`,
+      });
+      return null;
+    }
+    return parsed.data;
+  });
+
 const durationMs = positiveInt.max(
   60 * 60_000,
   "duration must be under an hour",
@@ -152,6 +191,22 @@ const workerEnvSchema = z
 
     /** How long a SIGTERM waits for in-flight jobs before forcing the exit. */
     SHUTDOWN_TIMEOUT_MS: durationMs.default(30_000),
+
+    /**
+     * The fitted confidence calibration, as the JSON document the evals harness
+     * writes (`bun run evals calibrate`).
+     *
+     * Configuration rather than a table because it is a *release* decision: a
+     * map is fitted on measured data, checked on held-out data, reviewed, and
+     * deployed with the build whose answers it corrects. A knob that could
+     * silently change the confidence every customer sees, with no diff and no
+     * review, would be the wrong shape entirely.
+     *
+     * Absent leaves `Synthesis.calibratedConfidence` null, which is the honest
+     * reading of "this build has not measured its own confidence yet" — the
+     * evaluator's raw number is still stored and still shown.
+     */
+    CONFIDENCE_CALIBRATION: calibrationEnvSchema,
   })
   .refine((env) => env.EVALUATOR_TIMEOUT_MS <= env.RUN_DEADLINE_MS, {
     message:

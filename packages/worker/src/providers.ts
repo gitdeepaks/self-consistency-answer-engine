@@ -6,6 +6,7 @@ import {
   resolveAvailability,
   resolveEvaluatorAvailability,
   resolvePanelAvailability,
+  type PanelConfig,
   type ProviderAvailability,
   type ProviderId,
 } from "@sce/shared";
@@ -85,7 +86,18 @@ export function resolvePanel(only?: readonly ProviderId[]): ResolvedProvider[] {
   return resolvePanelAvailability(only).map(withModel);
 }
 
-/** Resolve the evaluator that compares candidates and writes the final answer. */
-export function resolveEvaluator(): ResolvedProvider {
-  return withModel(resolveEvaluatorAvailability());
+/**
+ * Resolve the evaluator that compares candidates and writes the final answer.
+ *
+ * The panel gets to name one. A run created under a panel whose evaluator is a
+ * different model *was judged by that model*, and recording `panelId` on the
+ * run is only worth anything if it is what the worker reads back.
+ */
+export function resolveEvaluator(panel?: PanelConfig | null): ResolvedProvider {
+  return withModel(
+    resolveEvaluatorAvailability(
+      process.env,
+      panel === undefined || panel === null ? undefined : panel.evaluator,
+    ),
+  );
 }

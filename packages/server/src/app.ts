@@ -25,7 +25,10 @@ import {
   setRunTagsInputSchema,
   toHealth,
   API_VERSION,
+  CACHE_CONTROL_HEADER,
+  CACHE_HEADER,
   REQUEST_ID_HEADER,
+  wantsFreshAnswer,
   type RunEvent,
   type RunStatus,
 } from "@sce/shared"
@@ -222,7 +225,7 @@ const api = new Hono<Env>()
         assertEntitlement(allowance.billing.plan, "panel.custom")
       }
 
-      const { run, created } = await startRun(actor.tenantId, input, {
+      const { run, created, cache } = await startRun(actor.tenantId, input, {
         idempotencyKey: headers["idempotency-key"] ?? null,
         // Ownership is recorded at creation, which is what lets `can()` answer
         // "your run or a colleague's?" later without a second lookup.
@@ -230,7 +233,17 @@ const api = new Hono<Env>()
         // Narrowed to what is left of the month, so one enormous run cannot
         // spend an allowance that the pre-flight check just found room in.
         limits: allowance.limits,
+        // A caller may insist on a fresh sample of the panel. The evals harness
+        // always does; a person who suspects the world has changed since the
+        // cached answer can too.
+        bypassCache: wantsFreshAnswer(c.req.header(CACHE_CONTROL_HEADER)),
       })
+
+      // Reported as a header rather than in the body, because it is a property
+      // of *how this response was produced* and not of the run: a client that
+      // ignores it sees exactly what it saw before the cache existed, and a
+      // client that reads it can say "answered instantly, from an earlier run".
+      c.header(CACHE_HEADER, cache)
       return c.json({ run }, created ? 201 : 200)
     },
   )

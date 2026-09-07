@@ -45,3 +45,20 @@ process.env.CLERK_WEBHOOK_SIGNING_SECRET ??= `whsec_${Buffer.from(
  * `??=` so a suite (or a developer) can still turn it on deliberately.
  */
 process.env.RATE_LIMIT_ENABLED ??= "false";
+
+/**
+ * The answer cache is off by default under `bun test`.
+ *
+ * The suite runs against a shared Postgres and asks the same questions every
+ * time — "Summarise CAP theorem", "Cancel me" — and the cache's TTL is a day.
+ * A second `bun test` within that window would serve those runs from the first
+ * one, so a test's behaviour would depend on what ran yesterday. That is the
+ * same argument as `RATE_LIMIT_ENABLED` above, and it has the same answer.
+ *
+ * What decides whether an answer may be reused is pure and is tested directly
+ * in `packages/shared/src/answer-cache.test.ts` — normalisation, the canonical
+ * key, the fingerprint, and every pair that must *not* match.
+ *
+ * `??=` so a suite (or a developer) can still turn it on deliberately.
+ */
+process.env.ANSWER_CACHE_ENABLED ??= "false";

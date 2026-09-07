@@ -220,13 +220,21 @@ const GOOD_SYNTHESIS = {
   reviews: [
     {
       provider: "openai",
+      label: "OpenAI",
       score: 8,
       strengths: ["clear"],
       weaknesses: ["shallow"],
     },
-    { provider: "anthropic", score: 9, strengths: ["precise"], weaknesses: [] },
+    {
+      provider: "anthropic",
+      label: "Claude",
+      score: 9,
+      strengths: ["precise"],
+      weaknesses: [],
+    },
     {
       provider: "google",
+      label: "Gemini",
       score: 7,
       strengths: ["concise"],
       weaknesses: ["missed detail"],

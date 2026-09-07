@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator"
-import { feedbackFor, getRun, listFeedback, submitFeedback } from "@sce/db"
-import { submitFeedbackInputSchema } from "@sce/shared"
+import { feedbackFor, getRun, listFeedback, submitFeedback, triageFeedback } from "@sce/db"
+import { feedbackQueueQuerySchema, submitFeedbackInputSchema, triageFeedbackInputSchema } from "@sce/shared"
 import { Hono } from "hono"
 import { actorOf, requirePermission, type AuthEnv } from "./auth/middleware.ts"
 
@@ -81,8 +81,48 @@ const feedback = new Hono<AuthEnv>()
  * of this one" — and because it is the endpoint Phase 7's eval harness will
  * pull from.
  */
-const feedbackQueue = new Hono<AuthEnv>().get("/", requirePermission("run.read"), async (c) =>
-  c.json({ entries: await listFeedback({ tenantId: actorOf(c).tenantId }) }),
-)
+const feedbackQueue = new Hono<AuthEnv>()
+
+  .get("/", requirePermission("run.read"), zValidator("query", feedbackQueueQuerySchema), async (c) => {
+    const query = c.req.valid("query")
+    return c.json({
+      entries: await listFeedback({
+        tenantId: actorOf(c).tenantId,
+        rating: query.rating,
+        ...(query.status === undefined ? {} : { status: query.status }),
+        limit: query.limit,
+      }),
+    })
+  })
+
+  /**
+   * Record what a reviewer concluded.
+   *
+   * Gated on `run.delete` rather than on `run.read`, which is the closest thing
+   * this codebase has to "can change what the workspace asserts about itself".
+   * Reading a colleague's answer is enough to *report* that it is wrong — that
+   * is the whole design of the thumbs — but deciding that it was, and thereby
+   * putting it into the eval set, is not something every viewer should do.
+   */
+  .post(
+    "/:feedbackId/triage",
+    requirePermission("run.delete"),
+    zValidator("json", triageFeedbackInputSchema),
+    async (c) => {
+      const actor = actorOf(c)
+      const input = c.req.valid("json")
+
+      const updated = await triageFeedback({
+        tenantId: actor.tenantId,
+        feedbackId: c.req.param("feedbackId"),
+        status: input.status,
+        note: input.note ?? null,
+        reviewerUserId: actor.userId,
+      })
+      if (updated === null) return c.json({ error: "Feedback not found" }, 404)
+
+      return c.json({ feedback: updated })
+    },
+  )
 
 export { feedback, feedbackQueue }

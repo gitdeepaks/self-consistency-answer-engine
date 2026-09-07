@@ -11,7 +11,10 @@ import { runBus } from "@sce/queue"
 import {
   actorTypeFor,
   assertNever,
+  CACHE_CONTROL_HEADER,
+  CACHE_HEADER,
   can,
+  wantsFreshAnswer,
   CONDITIONAL_HEADERS,
   eventCursorInputSchema,
   eventCursorSchema,
@@ -108,12 +111,18 @@ runs.openapi(
       assertEntitlement(allowance.billing.plan, "panel.custom")
     }
 
-    const { run, created } = await startRun(actor.tenantId, input, {
+    const { run, created, cache } = await startRun(actor.tenantId, input, {
       idempotencyKey: c.req.valid("header")["idempotency-key"] ?? null,
       createdByUserId: actor.userId,
       limits: allowance.limits,
+      // `Cache-Control: no-store` means what it says: generate this one.
+      bypassCache: wantsFreshAnswer(c.req.header(CACHE_CONTROL_HEADER)),
     })
 
+    // Documented in `doc/api/limits.md`: an informational header, never a
+    // contract a caller should branch on for correctness. The run itself
+    // carries `cachedFromRunId`, which is the durable form of the same fact.
+    c.header(CACHE_HEADER, cache)
     return created ? c.json(run, 201) : c.json(run, 200)
   },
 )

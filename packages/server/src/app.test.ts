@@ -27,9 +27,9 @@ const SYNTHESIS = {
   agreements: ["they agreed"],
   disagreements: [],
   reviews: [
-    { provider: "openai", score: 8, strengths: [], weaknesses: [] },
-    { provider: "anthropic", score: 9, strengths: [], weaknesses: [] },
-    { provider: "google", score: 7, strengths: [], weaknesses: [] },
+    { provider: "openai", label: "OpenAI", score: 8, strengths: [], weaknesses: [] },
+    { provider: "anthropic", label: "Claude", score: 9, strengths: [], weaknesses: [] },
+    { provider: "google", label: "Gemini", score: 7, strengths: [], weaknesses: [] },
   ],
   finalAnswer: "The merged answer.",
   confidence: 0.9,

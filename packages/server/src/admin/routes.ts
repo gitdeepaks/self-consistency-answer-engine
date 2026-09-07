@@ -4,6 +4,9 @@ import {
   adminFindRun,
   adminInstallCounts,
   adminTenantRows,
+  cacheReport,
+  calibrationSample,
+  experimentReport,
   getRun,
   recordAuditSafely,
   releaseKillSwitch,
@@ -17,16 +20,29 @@ import {
 } from "@sce/queue"
 import {
   actorTypeFor,
+  adminQualityQuerySchema,
   adminTenantQuerySchema,
   DEAD_LETTER_TRACE_FRAMES,
+  DEFAULT_RELIABILITY_BINS,
   dayStart,
   effectivePlan,
   GLOBAL_SPEND_SWITCH,
   releaseKillSwitchInputSchema,
   replayDeadLetterInputSchema,
+  isExperimentActive,
+  panelSeats,
+  PANEL_LIST,
+  PROMPT_SET_LIST,
+  reliability,
   resolveAccess,
+  resolveAvailability,
+  resolveEvaluatorAvailability,
+  type AdminExperiment,
+  type AdminPanel,
+  type AdminQuality,
   type AdminTenant,
   type DeadLetterView,
+  type ExperimentArm,
 } from "@sce/shared"
 import { Hono } from "hono"
 import { actorOf, type AuthEnv } from "../auth/middleware.ts"
@@ -78,6 +94,48 @@ function toDeadLetterView(letter: {
     failedReason: letter.failedReason,
     stacktrace: letter.stacktrace.slice(0, DEAD_LETTER_TRACE_FRAMES),
     failedAt: letter.failedAt,
+  }
+}
+
+/** An arm an experiment declares but that no run has landed in yet. */
+function emptyArm(variantId: string, panelId: string): ExperimentArm {
+  return {
+    variantId,
+    panelId,
+    runs: 0,
+    completed: 0,
+    failed: 0,
+    cached: 0,
+    meanConfidence: null,
+    meanCalibratedConfidence: null,
+    meanLatencyMs: null,
+    costMicroCents: 0,
+    thumbsUp: 0,
+    thumbsDown: 0,
+  }
+}
+
+/**
+ * A registered panel, resolved to the models it would actually call.
+ *
+ * Resolution matters here: a panel that pins no model reads as its provider's
+ * env-configured one, and an operator comparing two arms needs to see the model
+ * ids this install would use rather than the blanks in the registry.
+ */
+function describeAdminPanel(panel: (typeof PANEL_LIST)[number]): AdminPanel {
+  const evaluator = resolveEvaluatorAvailability(process.env, panel.evaluator)
+  return {
+    id: panel.id,
+    label: panel.label,
+    description: panel.description,
+    promptSetId: panel.promptSetId,
+    seats: panelSeats(panel).map((seat) => ({
+      provider: seat.provider,
+      label: seat.label,
+      model: resolveAvailability(seat.provider, seat.model ?? undefined).modelId,
+    })),
+    evaluator: { provider: evaluator.spec.id, model: evaluator.modelId },
+    isDefault: panel.id === config.panels.defaultPanelId,
   }
 }
 
@@ -273,6 +331,123 @@ const admin = new Hono<AuthEnv>()
     })
 
     return c.json({ killSwitch, budget: await globalBudgetStatus(new Date()) })
+  })
+
+  /**
+   * The quality console.
+   *
+   * One request for the three questions Phase 7 asks continuously — is the
+   * experiment saying anything, is the cache paying for itself, and does the
+   * confidence number mean anything — for the same reason the overview is one
+   * request: three panels fetched separately are three panels that disagree
+   * about which window they are describing.
+   *
+   * Every figure is an aggregate over the whole install. No prompt and no
+   * answer body crosses this boundary; reading one run is what the tenant-scoped
+   * run inspector is for.
+   */
+  .get("/quality", zValidator("query", adminQualityQuerySchema), async (c) => {
+    const query = c.req.valid("query")
+    const now = new Date()
+    const since = new Date(now.getTime() - query.days * DAY_MS)
+
+    const [arms, cache, points] = await Promise.all([
+      experimentReport({
+        scope: { kind: "every-tenant", reason: "the experiment report spans the install" },
+        since,
+      }),
+      cacheReport({
+        scope: { kind: "every-tenant", reason: "the cache report spans the install" },
+        since,
+      }),
+      calibrationSample({
+        scope: { kind: "every-tenant", reason: "the calibration sample spans the install" },
+        since,
+      }),
+    ])
+
+    const measured = reliability(
+      points.map((point) => ({ confidence: point.confidence, correct: point.correct })),
+      DEFAULT_RELIABILITY_BINS,
+    )
+
+    const byExperiment = new Map<string, ExperimentArm[]>()
+    for (const arm of arms) {
+      const existing = byExperiment.get(arm.experimentId) ?? []
+      existing.push({
+        variantId: arm.variantId,
+        panelId: arm.panelId,
+        runs: arm.runs,
+        completed: arm.completed,
+        failed: arm.failed,
+        cached: arm.cached,
+        meanConfidence: arm.meanConfidence,
+        meanCalibratedConfidence: arm.meanCalibratedConfidence,
+        meanLatencyMs: arm.meanLatencyMs,
+        costMicroCents: arm.costMicroCents,
+        thumbsUp: arm.thumbsUp,
+        thumbsDown: arm.thumbsDown,
+      })
+      byExperiment.set(arm.experimentId, existing)
+    }
+
+    // Configured experiments first, so an arm that has produced no runs yet
+    // still appears — "the treatment group is empty" is exactly the kind of
+    // misconfiguration this page exists to make visible. Anything measured but
+    // no longer configured is appended rather than dropped, because a report
+    // that quietly forgets a concluded experiment is a report nobody trusts.
+    const configured: AdminExperiment[] = config.panels.experiments.map((experiment) => ({
+      id: experiment.id,
+      label: experiment.label,
+      hypothesis: experiment.hypothesis,
+      startsAt: experiment.startsAt,
+      endsAt: experiment.endsAt,
+      active: isExperimentActive(experiment, now),
+      arms:
+        byExperiment.get(experiment.id) ??
+        experiment.variants.map((variant) => emptyArm(variant.id, variant.panelId)),
+    }))
+
+    const known = new Set(configured.map((experiment) => experiment.id))
+    const historical: AdminExperiment[] = [...byExperiment.entries()]
+      .filter(([id]) => !known.has(id))
+      .map(([id, armRows]) => ({
+        id,
+        label: id,
+        hypothesis: "No longer configured on this install; the runs it produced are still counted.",
+        startsAt: since.toISOString(),
+        endsAt: null,
+        active: false,
+        arms: armRows,
+      }))
+
+    const quality: AdminQuality = {
+      windowDays: query.days,
+      panels: PANEL_LIST.map(describeAdminPanel),
+      experiments: [...configured, ...historical],
+      cache,
+      calibration: {
+        sampleSize: measured.count,
+        expectedCalibrationError: measured.expectedCalibrationError,
+        brierScore: measured.brierScore,
+        baseRate: measured.baseRate,
+        bins: measured.bins.map((bin) => ({
+          lower: bin.lower,
+          upper: bin.upper,
+          count: bin.count,
+          meanConfidence: bin.meanConfidence,
+          accuracy: bin.accuracy,
+        })),
+      },
+      promptSets: PROMPT_SET_LIST.map((set) => ({
+        id: set.id,
+        summary: set.summary,
+        introducedAt: set.introducedAt,
+      })),
+      generatedAt: now.toISOString(),
+    }
+
+    return c.json(quality)
   })
 
   /** Whether this install has a console at all, and who the caller is. */
