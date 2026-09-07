@@ -1,0 +1,151 @@
+# Phase 7 gate: answer quality.
+#
+# Two jobs, and the split is the whole design.
+#
+#   `harness` runs on every pull request. It costs nothing, needs no keys and
+#   no services, and answers "is the measuring instrument still sound?" — the
+#   golden set parses, every item is gradeable, the aggregation weights
+#   categories the way it claims to, and the gate still blocks the regressions
+#   it is supposed to block. A change that breaks the harness is caught in the
+#   pull request that makes it, not by a nightly run that everyone has learned
+#   to ignore.
+#
+#   `nightly` actually measures the product. It needs provider keys and a
+#   deployment to point at, it costs real money, and it takes an hour — which
+#   is exactly why it does not run per-commit. It grades the golden set, gates
+#   the result against the committed baseline, and uploads the report so a
+#   disputed number can be re-checked without re-running anything.
+#
+# The gate compares against `packages/evals/baselines/current.json`, which is
+# committed. Re-baselining is therefore a reviewed pull request with a diff a
+# person can read, rather than a number that moves on its own.
+
+name: evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 03:00 UTC, after the day's deploys have settled.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Items to grade (blank for the whole set)"
+        required: false
+        type: string
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    name: The harness itself
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # The harness imports the SDK and the shared schemas, which import the
+      # generated Prisma client along the way.
+      - name: Generate the Prisma client
+        run: bun run db:generate
+
+      - name: Typecheck
+        run: |
+          bun run --filter @sce/shared typecheck
+          bun run --filter @sce/evals typecheck
+
+      # Fails on a malformed item, a duplicate id, or a category too thin for
+      # its mean to mean anything.
+      - name: Validate the golden set
+        run: bun run evals:dataset
+
+      # Every number the gate reads is arithmetic on fixtures here — no model
+      # call, no network, no flake.
+      - name: The harness tests
+        run: bun test packages/evals packages/shared/src/calibration.test.ts
+
+  nightly:
+    name: Grade the golden set
+    # Never on a pull request: this job spends money, and a fork's pull request
+    # must not be able to spend it.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: evals
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Generate the Prisma client
+        run: bun run db:generate
+
+      - name: Grade the set
+        env:
+          # The deployment under test, and a key scoped to a workspace that
+          # exists for this purpose. Every run sends `Cache-Control: no-store`,
+          # so the harness measures the panel rather than re-grading its own
+          # cached answers.
+          SCE_BASE_URL: ${{ secrets.EVALS_BASE_URL }}
+          SCE_API_KEY: ${{ secrets.EVALS_API_KEY }}
+          # The judges. Rotating across providers spreads each family's bias
+          # over the set instead of handing it to one system under test.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+        run: |
+          bun run evals run \
+            --out report.json \
+            --id "nightly-${GITHUB_RUN_ID}" \
+            ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
+
+      - name: Render the report
+        run: |
+          bun run evals report report.json --out report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # The gate. A blocking finding fails the job, which is the point: a
+      # quality drop should stop a release exactly like a failing test.
+      - name: The regression gate
+        run: |
+          bun run evals:gate \
+            --report report.json \
+            --baseline packages/evals/baselines/current.json
+
+      # Kept whether or not the gate passed — a failed run is the one whose
+      # numbers somebody needs to read.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            report.json
+            report.md
+          retention-days: 90
+
+      # Advisory only. The fitted map is deployed by a human, in a pull request,
+      # after reading what it does to the numbers — a nightly job that silently
+      # changed the confidence every customer sees would be the wrong shape.
+      - name: Propose a confidence calibration
+        if: always()
+        continue-on-error: true
+        run: |
+          bun run evals calibrate --report report.json --out calibration.json
+          cat calibration.json >> "$GITHUB_STEP_SUMMARY" || true
