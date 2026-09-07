@@ -6,7 +6,8 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./handlers": "./src/handlers.ts"
+    "./handlers": "./src/handlers.ts",
+    "./providers": "./src/providers.ts"
   },
   "bin": {
     "sce-worker": "./src/cli.ts"

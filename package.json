@@ -38,6 +38,9 @@
     "scale-test": "bun run infra/scale-test.ts",
     "api:spec": "bun run infra/api-spec.ts",
     "api:check": "bun run infra/api-compat.ts",
+    "evals": "bun run packages/evals/src/cli.ts",
+    "evals:dataset": "bun run packages/evals/src/cli.ts dataset",
+    "evals:gate": "bun run packages/evals/src/cli.ts gate",
     "e2e": "bun run --filter @sce/web e2e"
   },
   "devDependencies": {

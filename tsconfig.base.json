@@ -16,6 +16,19 @@
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true,
     "resolveJsonModule": true,
+    /*
+     * `@sce/sdk` is the one workspace package whose `exports` point at a build
+     * output rather than at source, because it is the one that gets published.
+     * Without this mapping, another package importing it typechecks against
+     * whatever `dist/` happened to contain — stale declarations on a fresh
+     * clone, and no declarations at all before the first build. Mapping it to
+     * source makes the workspace behave like every other package here.
+     */
+    "paths": {
+      "@sce/sdk": [
+        "./packages/sdk/src/index.ts"
+      ]
+    },
     "allowJs": true,
     "types": [
       "bun"

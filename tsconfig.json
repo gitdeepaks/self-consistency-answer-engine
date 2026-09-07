@@ -7,6 +7,7 @@
     "packages/worker/src/**/*",
     "packages/server/src/**/*",
     "packages/sdk/src/**/*",
+    "packages/evals/src/**/*",
     "infra/**/*.ts",
     "test-setup.ts"
   ],
