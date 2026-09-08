@@ -1,5 +1,6 @@
 import { rollupUsage } from "@sce/db";
-import { dayStart, describeError } from "@sce/shared";
+import { dayStart } from "@sce/shared";
+import { logger } from "@sce/observability";
 import { workerConfig } from "./env.ts";
 
 /**
@@ -61,18 +62,18 @@ export function startRollup(): Rollup {
     return { stop: async () => {} };
   }
 
-  let running = false;
+  let running: Promise<void> | null = null;
   const timer = setInterval(() => {
     // Overlapping sweeps would recompute the same rows against each other;
     // skip rather than queue, exactly as the reaper does.
     if (running) return;
-    running = true;
-    void rollupOnce()
-      .catch((error: unknown) => {
-        console.error("[rollup] sweep failed", { error: describeError(error) });
+    running = rollupOnce()
+      .then(() => {})
+      .catch(() => {
+        logger.error("[rollup] sweep failed");
       })
       .finally(() => {
-        running = false;
+        running = null;
       });
   }, workerConfig.USAGE_ROLLUP_INTERVAL_MS);
   timer.unref?.();
@@ -80,6 +81,7 @@ export function startRollup(): Rollup {
   return {
     stop: async () => {
       clearInterval(timer);
+      await running;
     },
   };
 }

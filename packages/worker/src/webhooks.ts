@@ -1,3 +1,4 @@
+import { logger } from "@sce/observability";
 import {
   claimWebhookDispatch,
   dispatchWebhookEvent,
@@ -159,14 +160,14 @@ export async function processWebhookJob(
   });
 
   if (outcome.disabled) {
-    console.warn("[webhooks] endpoint disabled after repeated failures", {
+    logger.warn("[webhooks] endpoint disabled after repeated failures", {
       endpointId: delivery.endpointId,
       consecutiveFailures: outcome.consecutiveFailures,
     });
   }
 
   if (exhausted) {
-    console.warn("[webhooks] delivery given up", {
+    logger.warn("[webhooks] delivery given up", {
       deliveryId: delivery.id,
       eventType: delivery.eventType,
       attempts,
@@ -198,6 +199,7 @@ export async function processWebhookJob(
 export async function emitRunWebhook(
   run: Run,
   tenantId: string,
+  retryOnFailure = false,
 ): Promise<void> {
   const event =
     run.status === "COMPLETE"
@@ -211,7 +213,7 @@ export async function emitRunWebhook(
   // that every integration then has to filter out.
   if (event === null) return;
 
-  await emitWebhookEvent(tenantId, event);
+  await emitWebhookEvent(tenantId, event, retryOnFailure);
 }
 
 /**
@@ -226,6 +228,7 @@ export async function emitRunWebhook(
 export async function emitWebhookEvent(
   tenantId: string,
   event: WebhookEvent,
+  retryOnFailure = false,
 ): Promise<void> {
   try {
     const deliveryIds = await dispatchWebhookEvent({ tenantId, event });
@@ -233,24 +236,23 @@ export async function emitWebhookEvent(
       deliveryIds.map((deliveryId) =>
         webhookQueue()
           .enqueue({ tenantId, deliveryId })
-          .catch((error: unknown) => {
+          .catch(() => {
             // Not lost: the row is `PENDING` and due now, so the sweeper will
             // enqueue it on its next pass.
-            console.warn(
+            logger.warn(
               "[webhooks] could not enqueue immediately; left for the sweeper",
               {
                 deliveryId,
-                error: describeError(error),
               },
             );
           }),
       ),
     );
-  } catch (error: unknown) {
-    console.error("[webhooks] could not emit event", {
+  } catch (error) {
+    logger.error("[webhooks] could not emit event", {
       type: event.type,
-      error: describeError(error),
     });
+    if (retryOnFailure) throw error;
   }
 }
 
@@ -293,10 +295,9 @@ export async function sweepWebhooksOnce(
         deliveryId: delivery.id,
       });
       enqueued += 1;
-    } catch (error: unknown) {
-      console.error("[webhooks] sweep could not enqueue", {
+    } catch {
+      logger.error("[webhooks] sweep could not enqueue", {
         deliveryId: delivery.id,
-        error: describeError(error),
       });
     }
   }
@@ -342,26 +343,23 @@ export function startWebhookSweeper(): WebhookSweeper {
     return { stop: async () => {} };
   }
 
-  let running = false;
+  let running: Promise<void> | null = null;
   let ticks = 0;
 
   const timer = setInterval(() => {
     // Overlapping sweeps would enqueue the same rows against each other; skip
     // rather than queue, exactly as the reaper and the rollup do.
     if (running) return;
-    running = true;
     ticks += 1;
     const prune = ticks % PRUNE_EVERY_N_SWEEPS === 0;
 
-    void sweepWebhooksOnce()
+    running = sweepWebhooksOnce()
       .then(() => (prune ? pruneOnce() : undefined))
-      .catch((error: unknown) => {
-        console.error("[webhooks] sweep failed", {
-          error: describeError(error),
-        });
+      .catch(() => {
+        logger.error("[webhooks] sweep failed");
       })
       .finally(() => {
-        running = false;
+        running = null;
       });
   }, workerConfig.WEBHOOK_SWEEP_INTERVAL_MS);
   timer.unref?.();
@@ -369,6 +367,7 @@ export function startWebhookSweeper(): WebhookSweeper {
   return {
     stop: async () => {
       clearInterval(timer);
+      await running;
     },
   };
 }

@@ -22,6 +22,8 @@ import {
   type SynthesisJob,
 } from "@sce/shared";
 import { Output, generateText } from "ai";
+import { aiTelemetry, logger, metrics, withSpan } from "@sce/observability";
+import { providerCompleted, runCompleted, usageRecorded } from "./telemetry.ts";
 import {
   anySignal,
   cancellationSignal,
@@ -55,9 +57,13 @@ export async function processSynthesisJob(
   const run = await getRun(tenantId, runId);
   if (!run) return;
   // A redelivery after the run already concluded must not rewrite its outcome.
-  if (isTerminalRunStatus(run.status)) return;
+  if (isTerminalRunStatus(run.status)) {
+    await announce(tenantId, runId);
+    return;
+  }
 
-  const stop = await checkStop(tenantId, runId);
+  // A durable synthesis needs no more spending, but cancellation/deadline still apply.
+  const stop = await checkStop(tenantId, runId, new Date(), run.synthesis === null);
   if (stop) {
     switch (stop.kind) {
       case "canceled":
@@ -70,6 +76,8 @@ export async function processSynthesisJob(
         await concludeFailed(ctx, stop.message);
         return;
       case "finished":
+        await announce(tenantId, runId);
+        return;
       case "missing":
         return;
       default:
@@ -80,7 +88,7 @@ export async function processSynthesisJob(
   const succeeded = run.candidates.filter(
     (candidate) => candidate.status === "OK",
   );
-  if (succeeded.length === 0) {
+  if (run.synthesis === null && succeeded.length === 0) {
     await concludeFailed(
       ctx,
       `Every model in the panel failed — ${reasons(run.candidates)}`,
@@ -88,20 +96,28 @@ export async function processSynthesisJob(
     return;
   }
 
-  await setRunStatus(tenantId, runId, "SYNTHESIZING");
-  await ctx.emit({ type: "run.status", runId, status: "SYNTHESIZING" });
+  if (run.synthesis === null) {
+    await setRunStatus(tenantId, runId, "SYNTHESIZING");
+    await ctx.emit({ type: "run.status", runId, status: "SYNTHESIZING" });
+  }
 
+  let synthesis: Awaited<ReturnType<typeof saveSynthesis>>;
   try {
-    const synthesis = await synthesize(ctx, meta, run, succeeded);
-    await ctx.emit({ type: "synthesis.settled", runId, synthesis });
-
-    const totalLatencyMs = Date.now() - new Date(run.createdAt).getTime();
-    await completeRun(tenantId, runId, totalLatencyMs);
-    await ctx.emit({ type: "run.completed", runId, totalLatencyMs });
-    await announce(tenantId, runId);
+    // Resume after a persisted synthesis rather than paying for it again.
+    synthesis = run.synthesis ?? await synthesize(ctx, meta, run, succeeded);
   } catch (error) {
     if (error instanceof RetrySynthesis) throw error.cause;
     await concludeFailed(ctx, describeError(error));
+    return;
+  }
+  await ctx.emit({ type: "synthesis.settled", runId, synthesis });
+  const totalLatencyMs = Date.now() - new Date(run.createdAt).getTime();
+  const won = await withSpan("worker.run.persist", { "run.id": runId }, () => completeRun(tenantId, runId, totalLatencyMs));
+  if (won) runCompleted("complete", run.createdAt);
+  try {
+    if (won) await ctx.emit({ type: "run.completed", runId, totalLatencyMs });
+  } finally {
+    await announce(tenantId, runId);
   }
 }
 
@@ -126,14 +142,18 @@ function reasons(candidates: readonly Candidate[]): string {
 }
 
 async function concludeFailed(ctx: RunContext, message: string): Promise<void> {
-  await failRun(ctx.tenantId, ctx.runId, message).catch((error: unknown) => {
-    console.error("[worker] failed to mark run failed", {
-      runId: ctx.runId,
-      error,
-    });
-  });
-  await ctx.emit({ type: "run.failed", runId: ctx.runId, error: message });
-  await announce(ctx.tenantId, ctx.runId);
+  const run = await getRun(ctx.tenantId, ctx.runId);
+  if (!run) return;
+  const won = await withSpan("worker.run.persist", { "run.id": ctx.runId }, () => failRun(ctx.tenantId, ctx.runId, message));
+  if (won) {
+    if (run.synthesis === null) metrics.count("sce.synthesis.completed", 1, { outcome: "failure" });
+    runCompleted("failed", run.createdAt);
+  }
+  try {
+    if (won) await ctx.emit({ type: "run.failed", runId: ctx.runId, error: message });
+  } finally {
+    await announce(ctx.tenantId, ctx.runId);
+  }
 }
 
 /**
@@ -144,20 +164,13 @@ async function concludeFailed(ctx: RunContext, message: string): Promise<void> {
  * would return a moment later — a webhook that disagrees with the API it points
  * at is worse than no webhook.
  *
- * Never allowed to fail the job. The run has already concluded and its status
- * is already durable; a receiver being unreachable must not turn a completed
- * run into a retried synthesis, which would pay for the evaluator twice.
+ * Retry a failed outbox write, not a failed HTTP delivery. Terminal redelivery
+ * comes straight here without paying for the evaluator again. Dispatch uses a
+ * stable event ID and a unique endpoint/event key, so retries are idempotent.
  */
 async function announce(tenantId: string, runId: string): Promise<void> {
-  try {
-    const run = await getRun(tenantId, runId);
-    if (run !== null) await emitRunWebhook(run, tenantId);
-  } catch (error: unknown) {
-    console.error("[worker] could not emit the run webhook", {
-      runId,
-      error: describeError(error),
-    });
-  }
+  const run = await getRun(tenantId, runId);
+  if (run !== null) await emitRunWebhook(run, tenantId, true);
 }
 
 /* ------------------------------------------------------------ the evaluator */
@@ -189,29 +202,37 @@ async function synthesize(
     type: "synthesis.started",
     runId: ctx.runId,
     model: evaluator.modelId,
+  }).catch((error) => {
+    throw new RetrySynthesis(error);
   });
 
-  const startedAt = performance.now();
+  let startedAt = 0;
+  let providerFinished = false;
   const timeout = timeoutSignal(
     workerConfig.EVALUATOR_TIMEOUT_MS,
     "Evaluator call",
   );
-  const cancellation = await cancellationSignal(ctx.tenantId, ctx.runId);
+  const cancellation = await cancellationSignal(ctx.tenantId, ctx.runId).catch((error) => {
+    timeout.clear();
+    throw new RetrySynthesis(error);
+  });
   const combined = anySignal([timeout.signal, cancellation.signal]);
   const outputTokenCap = workerConfig.MAX_OUTPUT_TOKENS * 2;
 
   try {
-    const result = await withBulkhead(evaluator.spec.id, () =>
-      generateText({
+    const result = await withBulkhead(evaluator.spec.id, () => {
+      startedAt = performance.now();
+      return generateText({
         model,
+        experimental_telemetry: aiTelemetry("worker.synthesis"),
         system: prompts.evaluator.text,
         prompt: buildEvaluatorPrompt(run.prompt, [...candidates]),
         output: Output.object({ schema: synthesisOutputSchema }),
         maxOutputTokens: outputTokenCap,
         maxRetries: workerConfig.MAX_RETRIES,
         abortSignal: combined.signal,
-      }),
-    );
+      });
+    });
 
     // Structured output is only parsed on a clean stop. Hitting the token cap
     // yields a truncated JSON object, which surfaces as an unhelpful
@@ -228,14 +249,18 @@ async function synthesize(
     if (finalAnswer.length === 0)
       throw new Error("Evaluator returned an empty final answer");
 
+    providerFinished = true;
+    const latencyMs = Math.round(performance.now() - startedAt);
+    providerCompleted(evaluator.spec.id, "synthesis", "success", startedAt);
     await recordProviderOutcome(evaluator.spec.id, { ok: true });
+    await meterEvaluator(ctx, evaluator.spec.id, evaluator.modelId, usage);
 
     // The raw confidence is stored unchanged and the corrected reading beside
     // it. Replacing one with the other would make the correction impossible to
     // ever check — and the map is refitted from exactly this column.
     const calibration = workerConfig.CONFIDENCE_CALIBRATION;
 
-    const synthesis = await saveSynthesis(ctx.tenantId, ctx.runId, {
+    const synthesis = await withSpan("worker.synthesis.persist", { "run.id": ctx.runId }, () => saveSynthesis(ctx.tenantId, ctx.runId, {
       model: evaluator.modelId,
       finalAnswer,
       agreements: output.agreements,
@@ -245,15 +270,19 @@ async function synthesize(
       calibratedConfidence:
         calibration === null ? null : applyCalibration(calibration, output.confidence),
       calibrationId: calibration?.id ?? null,
-      latencyMs: Math.round(performance.now() - startedAt),
+      latencyMs,
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
-    });
-
-    await meterEvaluator(ctx, evaluator.spec.id, evaluator.modelId, usage);
+    }));
+    metrics.count("sce.synthesis.completed", 1, { outcome: "success" });
     return synthesis;
   } catch (error) {
-    await recordProviderOutcome(evaluator.spec.id, { ok: false, error });
+    // Storage/breaker failures belong to queue retry, not provider health.
+    if (providerFinished) throw new RetrySynthesis(error);
+    providerCompleted(evaluator.spec.id, "synthesis", cancellation.signal.aborted ? "canceled" : timeout.signal.aborted ? "timeout" : "failure", startedAt);
+    await recordProviderOutcome(evaluator.spec.id, { ok: false, error }).catch((storageError) => {
+      throw new RetrySynthesis(storageError);
+    });
 
     if (cancellation.signal.aborted) {
       throw new Error("Synthesis canceled by request");
@@ -276,7 +305,7 @@ async function synthesize(
   } finally {
     timeout.clear();
     combined.clear();
-    await cancellation.clear();
+    await cancellation.clear().catch((error) => { throw new RetrySynthesis(error); });
   }
 }
 
@@ -344,7 +373,7 @@ async function meterEvaluator(
   },
 ): Promise<void> {
   try {
-    await recordUsage({
+    const recorded = await withSpan("worker.usage.persist", { "run.id": ctx.runId }, () => recordUsage({
       tenantId: ctx.tenantId,
       runId: ctx.runId,
       kind: "EVALUATOR",
@@ -352,12 +381,12 @@ async function meterEvaluator(
       model,
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
-    });
-  } catch (error) {
-    console.error("[worker] failed to record evaluator usage", {
+    }));
+    usageRecorded(recorded);
+  } catch {
+    logger.error("[worker] failed to record evaluator usage", {
       runId: ctx.runId,
       model,
-      error: describeError(error),
     });
   }
 }

@@ -1,7 +1,10 @@
-import { cancelPendingCandidates, failRun, listOverdueRuns } from "@sce/db";
+import { cancelPendingCandidates, failRun, getRun, listOverdueRuns } from "@sce/db";
 import { runBus } from "@sce/queue";
-import { describeError } from "@sce/shared";
+import { isTerminalRunStatus } from "@sce/shared";
+import { logger, withSpan } from "@sce/observability";
+import { runCompleted } from "./telemetry.ts";
 import { workerConfig } from "./env.ts";
+import { emitRunWebhook } from "./webhooks.ts";
 
 /**
  * The deadline reaper.
@@ -39,24 +42,32 @@ export async function reapOnce(now: Date = new Date()): Promise<number> {
       : "Run exceeded its deadline and no worker completed it";
 
     try {
-      await cancelPendingCandidates(run.tenantId, run.id, message);
-      await failRun(run.tenantId, run.id, message);
-      await runBus().publish(run.tenantId, run.id, {
-        type: "run.failed",
-        runId: run.id,
-        error: message,
-      });
+      const current = await getRun(run.tenantId, run.id);
+      if (!current || isTerminalRunStatus(current.status)) continue;
+      const won = await withSpan("worker.reaper.persist", { "run.id": run.id }, () => failRun(run.tenantId, run.id, message));
+      if (!won) continue;
+      runCompleted("failed", current.createdAt);
       reaped += 1;
-    } catch (error) {
-      console.error("[reaper] failed to reap run", {
+      try {
+        await cancelPendingCandidates(run.tenantId, run.id, message);
+        await runBus().publish(run.tenantId, run.id, {
+          type: "run.failed",
+          runId: run.id,
+          error: message,
+        });
+      } finally {
+        const failed = await getRun(run.tenantId, run.id);
+        if (failed) await emitRunWebhook(failed, run.tenantId, true);
+      }
+    } catch {
+      logger.error("[reaper] failed to reap run", {
         runId: run.id,
-        error: describeError(error),
       });
     }
   }
 
   if (reaped > 0)
-    console.warn(`[reaper] failed ${reaped} run(s) past their deadline`);
+    logger.warn("[reaper] failed runs past their deadline", { reaped });
   return reaped;
 }
 
@@ -66,17 +77,17 @@ export function startReaper(): Reaper {
     return { stop: async () => {} };
   }
 
-  let running = false;
+  let running: Promise<void> | null = null;
   const timer = setInterval(() => {
     // Overlapping sweeps would compete for the same rows; skip rather than queue.
     if (running) return;
-    running = true;
-    void reapOnce()
-      .catch((error: unknown) => {
-        console.error("[reaper] sweep failed", { error: describeError(error) });
+    running = reapOnce()
+      .then(() => {})
+      .catch(() => {
+        logger.error("[reaper] sweep failed");
       })
       .finally(() => {
-        running = false;
+        running = null;
       });
   }, workerConfig.REAPER_INTERVAL_MS);
   timer.unref?.();
@@ -84,6 +95,7 @@ export function startReaper(): Reaper {
   return {
     stop: async () => {
       clearInterval(timer);
+      await running;
     },
   };
 }

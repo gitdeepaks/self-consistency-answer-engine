@@ -1,6 +1,7 @@
 import { errorFacts, type ProviderId } from "@sce/shared";
 import { breakerKey, redis } from "@sce/queue";
 import { z } from "zod";
+import { metrics } from "@sce/observability";
 import { workerConfig } from "./env.ts";
 
 /**
@@ -184,6 +185,7 @@ export async function breakerState(
   provider: ProviderId,
 ): Promise<BreakerState> {
   const { openUntilMs } = await store().read(provider);
+  metrics.gauge("sce.provider.breaker.open", openUntilMs > Date.now() ? 1 : 0, { provider });
   if (openUntilMs > Date.now())
     return { state: "open", until: new Date(openUntilMs) };
   return { state: "closed" };
@@ -202,10 +204,12 @@ export async function recordProviderOutcome(
 ): Promise<void> {
   if (outcome.ok) {
     await store().recordSuccess(provider);
+    metrics.gauge("sce.provider.breaker.open", 0, { provider });
     return;
   }
   if (classify(outcome.error).kind === "permanent") return;
   await store().recordFailure(provider, workerConfig.BREAKER_COOLDOWN_MS);
+  await breakerState(provider);
 }
 
 /* --------------------------------------------------- retry classification */

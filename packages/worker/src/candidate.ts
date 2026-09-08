@@ -17,6 +17,8 @@ import {
   type ProviderId,
 } from "@sce/shared";
 import { streamText } from "ai";
+import { aiTelemetry, logger, metrics, withSpan } from "@sce/observability";
+import { providerCompleted, usageRecorded } from "./telemetry.ts";
 import {
   anySignal,
   cancellationSignal,
@@ -168,7 +170,6 @@ async function generate(
   });
   await setCandidateRunning(ctx.tenantId, ctx.runId, candidate.id);
 
-  const startedAt = performance.now();
   const timeout = timeoutSignal(
     workerConfig.PER_MODEL_TIMEOUT_MS,
     `${provider.spec.label} call`,
@@ -178,10 +179,13 @@ async function generate(
 
   const deltas = new DeltaBuffer(ctx, candidate.id);
   let text = "";
+  let providerFinished = false;
+  const startedAt = performance.now();
 
   try {
     const result = streamText({
       model,
+      experimental_telemetry: aiTelemetry("worker.candidate"),
       system: ask.system,
       prompt: ask.prompt,
       maxOutputTokens: workerConfig.MAX_OUTPUT_TOKENS,
@@ -202,25 +206,14 @@ async function generate(
         throw part.error;
       }
     }
-    await deltas.flush();
-
     const trimmed = text.trim();
     if (trimmed.length === 0) throw new EmptyAnswerError();
 
     const usage = await result.usage;
-    const settled = await settleCandidate(
-      ctx.tenantId,
-      ctx.runId,
-      candidate.id,
-      {
-        status: "OK",
-        content: trimmed,
-        latencyMs: Math.round(performance.now() - startedAt),
-        inputTokens: usage.inputTokens ?? null,
-        outputTokens: usage.outputTokens ?? null,
-      },
-    );
-
+    providerFinished = true;
+    const latencyMs = Math.round(performance.now() - startedAt);
+    providerCompleted(candidate.provider, "candidate", "success", startedAt);
+    await deltas.flush();
     await recordProviderOutcome(candidate.provider, { ok: true });
     await meter(ctx, {
       candidateId: candidate.id,
@@ -229,6 +222,19 @@ async function generate(
       inputTokens: usage.inputTokens ?? null,
       outputTokens: usage.outputTokens ?? null,
     });
+    const settled = await withSpan("worker.candidate.persist", { "candidate.id": candidate.id }, () => settleCandidate(
+      ctx.tenantId,
+      ctx.runId,
+      candidate.id,
+      {
+        status: "OK",
+        content: trimmed,
+        latencyMs,
+        inputTokens: usage.inputTokens ?? null,
+        outputTokens: usage.outputTokens ?? null,
+      },
+    ));
+    metrics.count("sce.candidate.completed", 1, { outcome: settled.status });
 
     await ctx.emit({
       type: "candidate.settled",
@@ -236,6 +242,8 @@ async function generate(
       candidate: settled,
     });
   } catch (error) {
+    if (providerFinished) throw error;
+    providerCompleted(candidate.provider, "candidate", cancellation.signal.aborted ? "canceled" : timeout.signal.aborted ? "timeout" : "failure", startedAt);
     await deltas.discard();
     await handleFailure(ctx, meta, candidate, provider, {
       error,
@@ -329,7 +337,7 @@ async function handleFailure(
   // Streaming makes a partial answer possible for the first time: a call that
   // used to yield nothing on timeout now yields what it produced, kept as
   // evidence next to the reason it stopped.
-  const settled =
+  const settled = await withSpan("worker.candidate.persist", { "candidate.id": candidate.id }, async () =>
     failure.partial.trim().length > 0
       ? await settleCandidatePartial(ctx.tenantId, ctx.runId, candidate.id, {
           status,
@@ -341,7 +349,8 @@ async function handleFailure(
           status,
           error: message,
           latencyMs: failure.latencyMs,
-        });
+        }));
+  metrics.count("sce.candidate.completed", 1, { outcome: settled.status });
 
   await ctx.emit({
     type: "candidate.settled",
@@ -362,12 +371,13 @@ async function settleAndEmit(
   candidateId: string,
   result: CandidateResult,
 ): Promise<void> {
-  const settled = await settleCandidate(
+  const settled = await withSpan("worker.candidate.persist", { "candidate.id": candidateId }, () => settleCandidate(
     ctx.tenantId,
     ctx.runId,
     candidateId,
     result,
-  );
+  ));
+  metrics.count("sce.candidate.completed", 1, { outcome: settled.status });
   await ctx.emit({
     type: "candidate.settled",
     runId: ctx.runId,
@@ -423,11 +433,10 @@ class DeltaBuffer {
         candidateId: this.#candidateId,
         text,
       });
-    } catch (error) {
-      console.error("[worker] failed to publish candidate delta", {
+    } catch {
+      logger.error("[worker] failed to publish candidate delta", {
         runId: this.#ctx.runId,
         candidateId: this.#candidateId,
-        error: describeError(error),
       });
     }
   }
@@ -452,7 +461,7 @@ async function meter(
   },
 ): Promise<void> {
   try {
-    await recordUsage({
+    const usage = await withSpan("worker.usage.persist", { "run.id": ctx.runId }, () => recordUsage({
       tenantId: ctx.tenantId,
       runId: ctx.runId,
       candidateId: input.candidateId,
@@ -461,13 +470,12 @@ async function meter(
       model: input.model,
       inputTokens: input.inputTokens,
       outputTokens: input.outputTokens,
-    });
-  } catch (error) {
-    console.error("[worker] failed to record usage", {
+    }));
+    usageRecorded(usage);
+  } catch {
+    logger.error("[worker] failed to record usage", {
       runId: ctx.runId,
       model: input.model,
-      error: describeError(error),
-      facts: errorFacts(error),
     });
   }
 }

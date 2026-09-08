@@ -9,7 +9,8 @@ import {
   setLocalRunJobHandlers,
   setLocalWebhookJobHandler,
 } from "@sce/queue";
-import { describeError } from "@sce/shared";
+import { initializeTelemetry, shutdownTelemetry, logger } from "@sce/observability";
+import { startQueueTelemetry } from "./queue-telemetry.ts";
 import { workerConfig } from "./env.ts";
 import { runJobHandlers } from "./handlers.ts";
 import { resolveEvaluator, resolvePanel } from "./providers.ts";
@@ -74,7 +75,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     // A fleet-wide breaker needs Redis; without it, per-process state is the
     // honest option rather than a Redis call that cannot succeed.
     setBreakerStore(new MemoryBreakerStore());
-    console.warn(
+    logger.warn(
       "[worker] RUN_TRANSPORT=local — running in-process. Runs do not survive a restart " +
         "and this process cannot be scaled past one replica.",
     );
@@ -91,18 +92,16 @@ export async function startWorker(): Promise<WorkerHandle> {
   const webhookWorker = createWebhookWorker(processWebhookJob);
 
   for (const worker of [candidateWorker, synthesisWorker, webhookWorker]) {
-    worker.on("failed", (job, error) => {
-      console.error("[worker] job failed", {
+    worker.on("failed", (job) => {
+      logger.error("[worker] job failed", {
         queue: worker.name,
-        jobId: job?.id,
-        attemptsMade: job?.attemptsMade,
-        error: describeError(error),
+        jobId: job?.id ?? null,
+        attemptsMade: job?.attemptsMade ?? null,
       });
     });
-    worker.on("error", (error) => {
-      console.error("[worker] worker error", {
+    worker.on("error", () => {
+      logger.error("[worker] worker error", {
         queue: worker.name,
-        error: describeError(error),
       });
     });
   }
@@ -115,6 +114,7 @@ export async function startWorker(): Promise<WorkerHandle> {
   const reaper = startReaper();
   const rollup = startRollup();
   const webhookSweeper = startWebhookSweeper();
+  const queueTelemetry = startQueueTelemetry();
 
   announce();
 
@@ -127,7 +127,8 @@ export async function startWorker(): Promise<WorkerHandle> {
        * first rather than closing a worker that is halfway through closing.
        */
       shuttingDown ??= (async () => {
-        console.log("[worker] draining…");
+        logger.info("[worker] draining");
+        await queueTelemetry.stop();
         await reaper.stop();
         await rollup.stop();
         await webhookSweeper.stop();
@@ -142,7 +143,7 @@ export async function startWorker(): Promise<WorkerHandle> {
         ]);
         await closeRedis();
         await disconnect();
-        console.log("[worker] drained");
+        logger.info("[worker] drained");
       })();
       return shuttingDown;
     },
@@ -166,8 +167,8 @@ function announce(): void {
   const panel = resolvePanel();
   const evaluator = resolveEvaluator();
 
-  console.log("Self-Consistency Answer Engine — worker");
-  console.log(
+  logger.info("Self-Consistency Answer Engine worker");
+  logger.info(
     `  transport  ${queueConfig.RUN_TRANSPORT}  concurrency ${queueConfig.QUEUE_CONCURRENCY}  ` +
       `attempts ${queueConfig.QUEUE_MAX_ATTEMPTS}`,
   );
@@ -175,16 +176,16 @@ function announce(): void {
     const state = provider.model
       ? `ready via ${provider.route}`
       : "UNAVAILABLE";
-    console.log(
+    logger.info(
       `  panel      ${provider.spec.label.padEnd(8)} ${provider.modelId.padEnd(22)} ${state}`,
     );
   }
-  console.log(
+  logger.info(
     `  evaluator  ${evaluator.spec.label.padEnd(8)} ${evaluator.modelId.padEnd(22)} ${
       evaluator.model ? `ready via ${evaluator.route}` : "UNAVAILABLE"
     }`,
   );
-  console.log(
+  logger.info(
     `  budgets    run ${Math.round(workerConfig.RUN_DEADLINE_MS / 1000)}s  ` +
       `model ${Math.round(workerConfig.PER_MODEL_TIMEOUT_MS / 1000)}s  ` +
       `tokens ${workerConfig.RUN_MAX_TOTAL_TOKENS || "unlimited"}`,
@@ -204,12 +205,12 @@ export function installShutdownHandlers(handle: WorkerHandle): void {
   const stop = (signal: NodeJS.Signals): void => {
     if (exiting) return;
     exiting = true;
-    console.log(`[worker] ${signal} received`);
+    logger.info("[worker] shutdown signal received", { signal });
 
     // A drain that hangs must not hold the deploy open for ever; the platform
     // would SIGKILL us anyway, and doing it ourselves at least logs why.
     const guard = setTimeout(() => {
-      console.error(
+      logger.error(
         `[worker] drain exceeded ${workerConfig.SHUTDOWN_TIMEOUT_MS}ms; exiting with work in flight`,
       );
       process.exit(1);
@@ -222,10 +223,8 @@ export function installShutdownHandlers(handle: WorkerHandle): void {
         clearTimeout(guard);
         process.exit(0);
       })
-      .catch((error: unknown) => {
-        console.error("[worker] shutdown failed", {
-          error: describeError(error),
-        });
+      .catch(() => {
+        logger.error("[worker] shutdown failed");
         process.exit(1);
       });
   };
@@ -237,6 +236,21 @@ export function installShutdownHandlers(handle: WorkerHandle): void {
 // Only when run as a program, so importing `@sce/worker` for its handlers (the
 // embedded-worker path, and the tests) does not start a second consumer.
 if (import.meta.main) {
-  const handle = await startWorker();
-  installShutdownHandlers(handle);
+  try {
+    initializeTelemetry("sce-worker");
+    const handle = await startWorker();
+    installShutdownHandlers({
+      async shutdown() {
+        try {
+          await handle.shutdown();
+        } finally {
+          await shutdownTelemetry();
+        }
+      },
+    });
+  } catch {
+    logger.error("[worker] startup failed");
+    await shutdownTelemetry();
+    process.exit(1);
+  }
 }

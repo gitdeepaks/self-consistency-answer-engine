@@ -1,3 +1,4 @@
+import { logger } from "@sce/observability";
 import {
   getKillSwitch,
   getRunControl,
@@ -6,7 +7,6 @@ import {
 } from "@sce/db";
 import { cancellationBus, runBus } from "@sce/queue";
 import {
-  describeError,
   GLOBAL_SPEND_SWITCH,
   isTerminalRunStatus,
   type RunEvent,
@@ -67,12 +67,13 @@ export async function checkStop(
   tenantId: string,
   runId: string,
   now: Date = new Date(),
+  checkSpending = true,
 ): Promise<StopReason | null> {
   // Checked first, and deliberately before the run is even loaded: when the
   // install's spend guard has tripped, the cheapest possible answer is "no".
   // The API refuses *new* runs; this is what stops the ones already in flight
   // from spending the rest of the day's budget while an operator investigates.
-  const halted = await installHalted(now);
+  const halted = checkSpending ? await installHalted(now) : null;
   if (halted !== null) return { kind: "halted", message: halted };
 
   const control = await getRunControl(tenantId, runId);
@@ -101,7 +102,7 @@ export async function checkStop(
     };
   }
 
-  return checkBudget(tenantId, runId, control);
+  return checkSpending ? checkBudget(tenantId, runId, control) : null;
 }
 
 /** The spend half of `checkStop`, split out so tests can drive it directly. */
@@ -176,10 +177,8 @@ async function installHalted(now: Date): Promise<string | null> {
       : null;
     haltCache = { readAt: now.getTime(), reason };
     return reason;
-  } catch (error) {
-    console.error("[worker] could not read the kill switch", {
-      error: describeError(error),
-    });
+  } catch {
+    logger.error("[worker] could not read the kill switch");
     return null;
   }
 }

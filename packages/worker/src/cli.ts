@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { logger } from "@sce/observability";
 import {
   disconnect,
   getKillSwitch,
@@ -20,7 +21,6 @@ import {
   dayStart,
   formatMicroCentsUsd,
   GLOBAL_SPEND_SWITCH,
-  describeError,
 } from "@sce/shared";
 import { z } from "zod";
 import { reapOnce } from "./reaper.ts";
@@ -271,8 +271,8 @@ if (import.meta.main) {
   let code = 0;
   try {
     code = await main(process.argv.slice(2));
-  } catch (error) {
-    console.error(describeError(error));
+  } catch {
+    logger.error("[worker] operator command failed");
     code = 1;
   } finally {
     await closeRedis();
