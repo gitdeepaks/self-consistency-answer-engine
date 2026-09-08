@@ -498,22 +498,31 @@ export async function saveSynthesis(
   return toSynthesis(row)
 }
 
+/** Only the terminal-transition winner may publish completion metrics. */
 export async function completeRun(
   tenantId: string,
   runId: string,
   totalLatencyMs: number,
-): Promise<void> {
-  await prisma.run.update({
-    where: { id: runId, tenantId },
+): Promise<boolean> {
+  const { count } = await prisma.run.updateMany({
+    where: { id: runId, tenantId, canceledAt: null, status: { in: ["PENDING", "QUEUED", "FANNING_OUT", "SYNTHESIZING"] } },
     data: { status: "COMPLETE", totalLatencyMs, completedAt: new Date(), error: null },
   })
+  if (count === 0 && !await prisma.run.findUnique({ where: { id: runId, tenantId }, select: { id: true } })) {
+    throw new Error("Run not found")
+  }
+  return count > 0
 }
 
-export async function failRun(tenantId: string, runId: string, error: string): Promise<void> {
-  await prisma.run.update({
-    where: { id: runId, tenantId },
+export async function failRun(tenantId: string, runId: string, error: string): Promise<boolean> {
+  const { count } = await prisma.run.updateMany({
+    where: { id: runId, tenantId, canceledAt: null, status: { in: ["PENDING", "QUEUED", "FANNING_OUT", "SYNTHESIZING"] } },
     data: { status: "FAILED", error, completedAt: new Date() },
   })
+  if (count === 0 && !await prisma.run.findUnique({ where: { id: runId, tenantId }, select: { id: true } })) {
+    throw new Error("Run not found")
+  }
+  return count > 0
 }
 
 /* --------------------------------------------------- queueing and cancelling */
