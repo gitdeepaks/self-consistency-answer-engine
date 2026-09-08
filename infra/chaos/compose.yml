@@ -1,0 +1,52 @@
+name: sce-chaos
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment: {POSTGRES_USER: sce, POSTGRES_PASSWORD: sce, POSTGRES_DB: sce}
+    networks: [data]
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U sce -d sce"]
+      interval: 2s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    networks: [data]
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      retries: 30
+  api:
+    build: {context: ../..}
+    env_file: ["${CHAOS_ENV_FILE:?Use an isolated local env file}"]
+    environment: &env
+      DATABASE_URL: postgresql://sce:sce@postgres:5432/sce
+      REDIS_URL: redis://redis:6379
+      RUN_TRANSPORT: redis
+      HOST: 0.0.0.0
+      PORT: "8787"
+      GLOBAL_DAILY_BUDGET_MICRO_CENTS: "100000000"
+      MAX_OUTPUT_TOKENS: "256"
+    ports: ["127.0.0.1:8788:8787"]
+    networks: [data, egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  worker:
+    build: {context: ../..}
+    command: [bun, run, packages/worker/src/index.ts]
+    healthcheck: {disable: true}
+    env_file: ["${CHAOS_ENV_FILE:?Use an isolated local env file}"]
+    environment: *env
+    networks: [data, egress]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+networks:
+  data: {internal: true}
+  egress:
+volumes:
+  postgres:
+  redis:

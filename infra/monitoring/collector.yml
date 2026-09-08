@@ -1,0 +1,87 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  filter/linked-spans:
+    error_mode: propagate
+    traces:
+      span:
+        - Len(links) > 0
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 64
+  transform/privacy:
+    error_mode: propagate
+    metric_statements:
+      - context: metric
+        statements:
+          - set(unit, "s") where name == "sce.queue.age"
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.instance.id"])
+      - context: datapoint
+        statements:
+          - keep_keys(attributes, ["method", "route", "status_class", "outcome", "provider", "operation", "direction", "queue", "state"])
+    log_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name"])
+      - context: scope
+        statements:
+          - set(name, "sce")
+          - set(version, "")
+          - keep_keys(attributes, [])
+      - context: log
+        statements:
+          - set(body, "structured operational event")
+          - set(severity_text, "")
+          - keep_keys(attributes, ["provider", "operation", "outcome", "queue", "state"])
+    trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name"])
+      - context: scope
+        statements:
+          - set(name, "sce")
+          - set(version, "")
+          - keep_keys(attributes, [])
+      - context: span
+        statements:
+          - set(name, "sce.operation")
+          - set(status.message, "")
+          - keep_keys(attributes, ["method", "route", "status_class", "outcome", "provider", "operation", "queue"])
+      - context: spanevent
+        statements:
+          - set(name, "event")
+          - keep_keys(attributes, [])
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    add_metric_suffixes: true
+    metric_expiration: 2m
+    resource_to_telemetry_conversion:
+      enabled: false
+  otlphttp/tempo:
+    endpoint: http://tempo:4318
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/linked-spans, transform/privacy, batch]
+      exporters: [otlphttp/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, batch]
+      exporters: [otlphttp/loki]

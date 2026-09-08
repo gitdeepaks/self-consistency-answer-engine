@@ -1,0 +1,9 @@
+{
+  "uid": "sce-cost", "title": "SCE Cost", "schemaVersion": 40, "version": 1,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Estimated USD in selected window (not billing ledger)", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "sum by (provider) (increase(sce_cost_microcents_total[$__range])) / 100000000"}]},
+    {"id": 2, "title": "Tokens / s", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "sum by (provider, direction) (rate(sce_tokens_total[5m]))"}]},
+    {"id": 3, "title": "Budget trips (process-lifetime latch; manual reset)", "type": "stat", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "sum(sce_budget_tripped_total)"}]}
+  ]
+}

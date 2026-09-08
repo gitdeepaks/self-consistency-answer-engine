@@ -1,0 +1,12 @@
+{
+  "uid": "sce-product", "title": "SCE Product", "schemaVersion": 40, "version": 1,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Runs created / s", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "sum(rate(sce_run_created_total[5m]))"}]},
+    {"id": 2, "title": "Terminal runs / s", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "sum by (outcome) (rate(sce_run_completed_total[5m]))"}]},
+    {"id": 3, "title": "Cache outcomes / s", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "sum by (outcome) (rate(sce_cache_requests_total[5m]))"}]},
+    {"id": 4, "title": "Tenant analytics are access-controlled", "type": "text", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "options": {"mode": "markdown", "content": "No tenant/user/run labels. Use authenticated /v1/usage, /api/usage/daily and the admin usage views; operators use `bun run ops spend --days 1 --limit 20`. Persisted usage is authoritative, not sampled telemetry. Confidence is model-reported, not measured accuracy. Feedback counts accepted submissions, not the current unique-user tally."}},
+    {"id": 5, "title": "Confidence cumulative distribution (0..1, selected window)", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"min": 0, "max": 1}}, "targets": [{"expr": "sum by (le) (increase(sce_run_confidence_bucket{le!=\"+Inf\"}[$__range])) / ignoring(le) group_left sum(increase(sce_run_confidence_count[$__range]))", "legendFormat": "confidence <= {{le}}"}]},
+    {"id": 6, "title": "Feedback submissions by outcome (selected window)", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}, "targets": [{"expr": "sum by (outcome) (increase(sce_feedback_total{outcome=~\"positive|negative\"}[$__range]))", "legendFormat": "{{outcome}}"}]}
+  ]
+}

@@ -1,0 +1,71 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      migration_compatible:
+        description: Old image tested against new schema; expand/contract gate approved
+        type: boolean
+        required: true
+        default: false
+      allow_paid_smoke:
+        description: Synthetic key and server/provider spend caps approved (up to two runs including rollback)
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: inputs.migration_compatible && inputs.allow_paid_smoke
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      SCE_API_KEY: ${{ secrets.SCE_SMOKE_API_KEY }}
+      ALLOW_PAID_LOAD: "yes"
+      SPEND_CAP_CONFIRMED: "yes"
+      TEST_ID: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: grafana/setup-k6-action@v1
+      - name: Select fixed target
+        env:
+          TARGET: ${{ inputs.environment }}
+        run: |
+          if [[ "$TARGET" == staging ]]; then
+            echo 'FLY_APP=self-consistency-answer-engine-staging' >> "$GITHUB_ENV"
+            echo 'FLY_CONFIG=fly.staging.toml' >> "$GITHUB_ENV"
+            echo 'SCE_BASE_URL=https://self-consistency-answer-engine-staging.fly.dev' >> "$GITHUB_ENV"
+          else
+            echo 'FLY_APP=self-consistency-answer-engine' >> "$GITHUB_ENV"
+            echo 'FLY_CONFIG=fly.toml' >> "$GITHUB_ENV"
+            echo 'SCE_BASE_URL=https://self-consistency-answer-engine.fly.dev' >> "$GITHUB_ENV"
+          fi
+      - name: Build immutable image (no deploy)
+        run: |
+          flyctl auth docker
+          image="registry.fly.io/$FLY_APP:git-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image" .
+          docker push "$image"
+          digest=$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "NEW_IMAGE=registry.fly.io/$FLY_APP@$digest" >> "$GITHUB_ENV"
+      - name: Deploy, smoke, and restore on failure
+        run: |
+          mkdir -p "$RUNNER_TEMP/deploy-evidence"
+          EVIDENCE_DIR="$RUNNER_TEMP/deploy-evidence" bash infra/ops/deploy.sh
+      - name: Preserve image and rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/deploy-evidence
+          retention-days: 14

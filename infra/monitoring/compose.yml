@@ -1,0 +1,40 @@
+name: sce-monitoring
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.123.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./collector.yml:/etc/otelcol/config.yaml:ro"]
+    ports: ["127.0.0.1:4318:4318"]
+    mem_limit: 512m
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--storage.tsdb.retention.size=2GB"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set a local Grafana password}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    ports: ["127.0.0.1:3001:3000"]
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes: ["./tempo.yml:/etc/tempo.yml:ro", "tempo:/var/tempo"]
+  loki:
+    image: grafana/loki:3.4.2
+    command: ["-config.file=/etc/loki.yml"]
+    volumes: ["./loki.yml:/etc/loki.yml:ro", "loki:/loki"]
+volumes:
+  prometheus:
+  grafana:
+  tempo:
+  loki:

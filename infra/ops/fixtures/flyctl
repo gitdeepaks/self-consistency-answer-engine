@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == machines ]]; then
+  digest="$(< "$MOCK_STATE")"
+  jq -n --arg digest "$digest" '["api", "worker"] | map({id: ., state: "started", config: {metadata: {fly_process_group: .}, image: "unused"}, image_ref: {digest: $digest}})'
+elif [[ "$1" == deploy ]]; then
+  image=""
+  rollback=no
+  while (($#)); do
+    case "$1" in
+      --image) image="$2"; shift ;;
+      --skip-release-command) rollback=yes ;;
+    esac
+    shift
+  done
+  printf '%s %s\n' "$image" "$rollback" >> "$MOCK_CALLS"
+  # Simulate a partial mutation before a failed rolling deployment returns.
+  printf '%s\n' "${image##*@}" > "$MOCK_STATE"
+  if [[ "$rollback" == yes && "$MOCK_MODE" == rollback-fails ]]; then exit 1; fi
+  if [[ "$rollback" == no && "$MOCK_MODE" != success && "$MOCK_MODE" != smoke-fails ]]; then exit 1; fi
+else
+  exit 2
+fi

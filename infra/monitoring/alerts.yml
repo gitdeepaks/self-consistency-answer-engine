@@ -1,0 +1,84 @@
+groups:
+  - name: sce-slo
+    rules:
+      - alert: SCEAvailabilityFastBurn
+        expr: |
+          (sum(rate(sce_http_requests_total{method="POST",route="/v1/runs",status_class="5xx"}[1h])) / sum(rate(sce_http_requests_total{method="POST",route="/v1/runs"}[1h])) > 14.4 * 0.005)
+          and
+          (sum(rate(sce_http_requests_total{method="POST",route="/v1/runs",status_class="5xx"}[5m])) / sum(rate(sce_http_requests_total{method="POST",route="/v1/runs"}[5m])) > 14.4 * 0.005)
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: POST /v1/runs availability burns the 99.5% SLO rapidly
+          runbook_url: doc/runbooks/phase8-operations.md#availability
+      - alert: SCEAvailabilitySlowBurn
+        expr: |
+          (sum(rate(sce_http_requests_total{method="POST",route="/v1/runs",status_class="5xx"}[6h])) / sum(rate(sce_http_requests_total{method="POST",route="/v1/runs"}[6h])) > 6 * 0.005)
+          and
+          (sum(rate(sce_http_requests_total{method="POST",route="/v1/runs",status_class="5xx"}[30m])) / sum(rate(sce_http_requests_total{method="POST",route="/v1/runs"}[30m])) > 6 * 0.005)
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: Sustained availability error-budget burn
+          runbook_url: doc/runbooks/phase8-operations.md#availability
+      - alert: SCELatencyFastBurn
+        expr: |
+          (1 - sum(rate(sce_run_duration_seconds_bucket{le="90"}[1h])) / sum(rate(sce_run_duration_seconds_count[1h])) > 14.4 * 0.05)
+          and
+          (1 - sum(rate(sce_run_duration_seconds_bucket{le="90"}[5m])) / sum(rate(sce_run_duration_seconds_count[5m])) > 14.4 * 0.05)
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: Run completion latency burns the 95% under 90 seconds objective
+          runbook_url: doc/runbooks/phase8-operations.md#latency
+      - alert: SCELatencySlowBurn
+        expr: |
+          (1 - sum(rate(sce_run_duration_seconds_bucket{le="90"}[6h])) / sum(rate(sce_run_duration_seconds_count[6h])) > 6 * 0.05)
+          and
+          (1 - sum(rate(sce_run_duration_seconds_bucket{le="90"}[30m])) / sum(rate(sce_run_duration_seconds_count[30m])) > 6 * 0.05)
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: Sustained completion latency budget burn
+          runbook_url: doc/runbooks/phase8-operations.md#latency
+      - alert: SCERunP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(sce_run_duration_seconds_bucket[10m]))) > 90
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: Run completion p95 exceeds 90 seconds
+          runbook_url: doc/runbooks/phase8-operations.md#latency
+      - alert: SCEQueueAge
+        expr: max by (queue) (sce_queue_age_seconds{state="wait"}) > 60
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: Oldest waiting job exceeds 60 seconds
+          runbook_url: doc/runbooks/queue.md
+      - alert: SCEDLQGrowth
+        expr: delta((max by (queue) (sce_queue_depth{state="failed"}))[10m:]) > 5
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: Net failed queue growth exceeds five jobs in ten minutes
+          runbook_url: doc/runbooks/queue.md
+      - alert: SCEBreakerOpen
+        expr: max by (provider) (sce_provider_breaker_open) == 1
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: Provider circuit breaker remains open
+          runbook_url: doc/runbooks/phase8-operations.md#breaker
+      - alert: SCEBudgetTripped
+        expr: sum(sce_budget_tripped_total) > 0
+        labels: {severity: page}
+        annotations:
+          summary: Spend guard trip latched for process lifetime; manual investigation and reset required
+          runbook_url: doc/runbooks/phase8-operations.md#budget
+      - alert: SCETelemetryMissing
+        expr: up{job="sce"} == 0 or absent(sce_queue_age_seconds{state="wait"})
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: Collector scrape or worker queue telemetry missing
+          runbook_url: doc/runbooks/phase8-operations.md#telemetry

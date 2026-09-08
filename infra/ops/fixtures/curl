@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Mock HTTP status only; never contacts a network.
+if [[ "$*" == *'/api/ready'* ]]; then
+  printf '%s' "${MOCK_READY_STATUS:-200}"
+else
+  printf '200'
+fi
+exit 0

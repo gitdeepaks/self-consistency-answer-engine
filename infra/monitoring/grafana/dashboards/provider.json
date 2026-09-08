@@ -1,0 +1,9 @@
+{
+  "uid": "sce-provider", "title": "SCE Provider", "schemaVersion": 40, "version": 1,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Calls / s", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "sum by (provider, operation, outcome) (rate(sce_provider_calls_total[5m]))"}]},
+    {"id": 2, "title": "Provider p95 (seconds)", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "histogram_quantile(0.95, sum by (provider, le) (rate(sce_provider_duration_seconds_bucket[5m])))"}]},
+    {"id": 3, "title": "Open breakers", "type": "timeseries", "datasource": {"uid": "prometheus"}, "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "max by (provider) (sce_provider_breaker_open)"}]}
+  ]
+}

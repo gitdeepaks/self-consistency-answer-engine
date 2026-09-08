@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: SCE
+    folder: SCE
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
