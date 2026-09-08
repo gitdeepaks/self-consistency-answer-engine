@@ -8,6 +8,7 @@ import {
 } from "@sce/shared"
 import { FlowProducer, Queue, Worker, type Job, type JobsOptions } from "bullmq"
 import { redis } from "./connection.ts"
+import { captureTraceContext, logger, withSpan, type TraceCarrier } from "@sce/observability"
 import { queueConfig } from "./env.ts"
 import {
   CANDIDATE_QUEUE,
@@ -36,6 +37,7 @@ import {
  */
 
 export interface EnqueueRunInput {
+  traceContext?: TraceCarrier
   tenantId: string
   runId: string
   /** Candidate rows to fan out. Already-skipped panel members are not included. */
@@ -88,10 +90,12 @@ export function synthesisQueueHandle(): Queue<SynthesisJob> {
 
 export class BullRunQueue implements RunQueue {
   async enqueueRun(input: EnqueueRunInput): Promise<void> {
+    await withSpan("queue.enqueue", { runId: input.runId }, async () => {
+    const traceContext = captureTraceContext()
     const children = input.candidateIds.map((candidateId) => ({
       name: CANDIDATE_JOB_NAME,
       queueName: CANDIDATE_QUEUE,
-      data: { tenantId: input.tenantId, runId: input.runId, candidateId },
+      data: candidateJobSchema.parse({ tenantId: input.tenantId, runId: input.runId, candidateId, traceContext }),
       opts: {
         ...jobOptions(queueConfig.QUEUE_MAX_ATTEMPTS),
         // Deterministic id: a retried enqueue of the same run is a no-op rather
@@ -105,10 +109,11 @@ export class BullRunQueue implements RunQueue {
     await flow().add({
       name: SYNTHESIS_JOB_NAME,
       queueName: SYNTHESIS_QUEUE,
-      data: { tenantId: input.tenantId, runId: input.runId },
+      data: synthesisJobSchema.parse({ tenantId: input.tenantId, runId: input.runId, traceContext }),
       opts: { ...jobOptions(queueConfig.QUEUE_MAX_ATTEMPTS), jobId: synthesisJobId(input.runId) },
       children,
     })
+    }, input.traceContext)
   }
 
   async close(): Promise<void> {
@@ -162,10 +167,12 @@ export class LocalRunQueue implements RunQueue {
       )
     }
 
-    const task = this.#execute(handlers, input).finally(() => {
+    await withSpan("queue.enqueue", { runId: input.runId }, async () => {
+    const task = this.#execute(handlers, { ...input, traceContext: captureTraceContext() }).finally(() => {
       this.#inFlight.delete(task)
     })
     this.#inFlight.add(task)
+    }, input.traceContext)
   }
 
   async #execute(handlers: RunJobHandlers, input: EnqueueRunInput): Promise<void> {
@@ -173,24 +180,22 @@ export class LocalRunQueue implements RunQueue {
     // path where a failed child is ignored rather than fatal.
     await Promise.all(
       input.candidateIds.map((candidateId) =>
-        handlers
-          .candidate(
-            { tenantId: input.tenantId, runId: input.runId, candidateId },
+        withSpan("queue.candidate", { runId: input.runId, candidateId }, () => handlers.candidate(
+            candidateJobSchema.parse({ tenantId: input.tenantId, runId: input.runId, candidateId, traceContext: input.traceContext }),
             localJobMeta(candidateJobId(input.runId, candidateId)),
-          )
-          .catch((error: unknown) => {
-            console.error("[queue:local] candidate handler threw", { candidateId, error })
+          ), input.traceContext ?? {})
+          .catch(() => {
+            logger.error("Local candidate handler failed", { candidateId })
           }),
       ),
     )
 
-    await handlers
-      .synthesis(
-        { tenantId: input.tenantId, runId: input.runId },
+    await withSpan("queue.synthesis", { runId: input.runId }, () => handlers.synthesis(
+        synthesisJobSchema.parse({ tenantId: input.tenantId, runId: input.runId, traceContext: input.traceContext }),
         localJobMeta(synthesisJobId(input.runId)),
-      )
-      .catch((error: unknown) => {
-        console.error("[queue:local] synthesis handler threw", { runId: input.runId, error })
+      ), input.traceContext ?? {})
+      .catch(() => {
+        logger.error("Local synthesis handler failed", { runId: input.runId })
       })
   }
 
@@ -227,7 +232,8 @@ export function createCandidateWorker(
   return new Worker<CandidateJob, void>(
     CANDIDATE_QUEUE,
     async (job: Job<CandidateJob, void>) => {
-      await process(candidateJobSchema.parse(job.data), jobMeta(job))
+      const data = candidateJobSchema.parse(job.data)
+      await withSpan("queue.candidate", { runId: data.runId }, () => process(data, jobMeta(job)), data.traceContext ?? {})
     },
     { connection: redis(), concurrency: queueConfig.QUEUE_CONCURRENCY },
   )
@@ -239,7 +245,8 @@ export function createSynthesisWorker(
   return new Worker<SynthesisJob, void>(
     SYNTHESIS_QUEUE,
     async (job: Job<SynthesisJob, void>) => {
-      await process(synthesisJobSchema.parse(job.data), jobMeta(job))
+      const data = synthesisJobSchema.parse(job.data)
+      await withSpan("queue.synthesis", { runId: data.runId }, () => process(data, jobMeta(job)), data.traceContext ?? {})
     },
     // Synthesis is one call per run and gates the run's completion; a lower
     // ceiling than the fan-out keeps a burst of finishing runs from crowding

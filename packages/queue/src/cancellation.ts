@@ -70,7 +70,7 @@ export class LocalCancellationBus implements CancellationBus {
       try {
         watcher({ runId, reason })
       } catch (error) {
-        console.error("[cancellation] local watcher threw", error)
+        logger.error("Local cancellation watcher failed")
       }
     }
   }
@@ -110,3 +110,4 @@ export function cancellationBus(): CancellationBus {
 export function setCancellationBus(next: CancellationBus): void {
   cancellation = next
 }
+import { logger } from "@sce/observability"

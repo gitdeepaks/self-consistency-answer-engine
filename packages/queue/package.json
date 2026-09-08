@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sce/db": "workspace:*",
+    "@sce/observability": "workspace:*",
     "@sce/shared": "workspace:*",
     "bullmq": "^6.2.1",
     "ioredis": "^6.0.0",

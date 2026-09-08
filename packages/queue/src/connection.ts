@@ -1,4 +1,5 @@
 import { Redis, type RedisOptions } from "ioredis"
+import { logger } from "@sce/observability"
 import { queueConfig } from "./env.ts"
 
 /**
@@ -44,7 +45,9 @@ export function redis(): Redis {
  * anybody else.
  */
 export function createRedis(): Redis {
-  return new Redis(queueConfig.REDIS_URL, baseOptions)
+  const connection = new Redis(queueConfig.REDIS_URL, baseOptions)
+  connection.on("error", () => { logger.error("Redis connection failed") })
+  return connection
 }
 
 /** Close the shared connection. Used by graceful shutdown and by tests. */

@@ -79,13 +79,12 @@ async function toFrame(tenantId: string, runId: string, event: RunEvent): Promis
   if (isEphemeralEvent(event)) return { runId, seq: null, event, createdAt }
 
   try {
-    const record = await appendRunEvent(tenantId, runId, event)
+    const record = await withSpan("persistence.event.append", { runId, type: event.type }, () => appendRunEvent(tenantId, runId, event))
     return { runId, seq: record.seq, event, createdAt: record.createdAt }
   } catch (error) {
-    console.error("[bus] durable append failed; publishing without a sequence number", {
+    logger.error("Durable append failed; publishing without sequence number", {
       runId,
       type: event.type,
-      error: error instanceof Error ? error.message : String(error),
     })
     return { runId, seq: null, event, createdAt }
   }
@@ -290,7 +289,7 @@ export class LocalRunBus implements RunBus {
       try {
         listener(frame)
       } catch (error) {
-        console.error("[bus] local listener threw", error)
+        logger.error("Local event listener failed")
       }
     }
     return frame
@@ -396,3 +395,4 @@ export function runBus(): RunBus {
 export function setRunBus(next: RunBus): void {
   bus = next
 }
+import { logger, withSpan } from "@sce/observability"

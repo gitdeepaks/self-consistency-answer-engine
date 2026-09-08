@@ -1,6 +1,7 @@
 import { WEBHOOK_JOB_NAME, webhookJobSchema, type WebhookJob } from "@sce/shared"
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq"
 import { redis } from "./connection.ts"
+import { captureTraceContext, logger, withSpan } from "@sce/observability"
 import { queueConfig } from "./env.ts"
 import { WEBHOOK_QUEUE, webhookJobId } from "./names.ts"
 import { localJobMeta, type JobMeta } from "./queues.ts"
@@ -57,10 +58,12 @@ export function webhookQueueHandle(): Queue<WebhookJob> {
 
 export class BullWebhookQueue implements WebhookQueue {
   async enqueue(job: WebhookJob): Promise<void> {
-    await webhookQueueHandle().add(WEBHOOK_JOB_NAME, job, {
+    await withSpan("queue.enqueue.webhook", { deliveryId: job.deliveryId }, async () => {
+    await webhookQueueHandle().add(WEBHOOK_JOB_NAME, webhookJobSchema.parse({ ...job, traceContext: captureTraceContext() }), {
       ...webhookJobOptions(),
       jobId: webhookJobId(job.deliveryId),
     })
+    }, job.traceContext)
   }
 
   async close(): Promise<void> {
@@ -100,17 +103,19 @@ export class LocalWebhookQueue implements WebhookQueue {
     // Throwing here would fail the run that emitted the event.
     if (handler === null) return
 
-    const task = handler(job, localJobMeta(webhookJobId(job.deliveryId)))
-      .catch((error: unknown) => {
-        console.error("[queue:local] webhook handler threw", {
+    await withSpan("queue.enqueue.webhook", { deliveryId: job.deliveryId }, async () => {
+    const data = webhookJobSchema.parse({ ...job, traceContext: captureTraceContext() })
+    const task = withSpan("queue.webhook", { deliveryId: job.deliveryId }, () => handler(data, localJobMeta(webhookJobId(job.deliveryId))), data.traceContext)
+      .catch(() => {
+        logger.error("Local webhook handler failed", {
           deliveryId: job.deliveryId,
-          error,
         })
       })
       .finally(() => {
         this.#inFlight.delete(task)
       })
     this.#inFlight.add(task)
+    }, job.traceContext)
   }
 
   async close(): Promise<void> {
@@ -144,7 +149,8 @@ export function createWebhookWorker(
   return new Worker<WebhookJob, void>(
     WEBHOOK_QUEUE,
     async (job: Job<WebhookJob, void>) => {
-      await process(webhookJobSchema.parse(job.data), webhookJobMeta(job))
+      const data = webhookJobSchema.parse(job.data)
+      await withSpan("queue.webhook", { deliveryId: data.deliveryId }, () => process(data, webhookJobMeta(job)), data.traceContext ?? {})
     },
     { connection: redis(), concurrency: queueConfig.WEBHOOK_CONCURRENCY },
   )
