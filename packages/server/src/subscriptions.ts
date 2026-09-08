@@ -70,7 +70,7 @@ async function resolveTenantId(
       const memberships = await listMemberships(user.id)
       const only = memberships.length === 1 ? memberships[0] : undefined
       if (only !== undefined) return only.tenant.id
-      console.warn("[billing] user payer belongs to several workspaces; skipping", {
+      logger.warn("Billing payer belongs to several workspaces; skipping", {
         externalUserId: payer.user_id,
         memberships: memberships.length,
       })
@@ -154,7 +154,7 @@ async function applySubscriptionEvent(
     subscriptionId: data.id,
   })
   if (tenantId === null) {
-    console.warn("[billing] no tenant for subscription event", {
+    logger.warn("No tenant for subscription event", {
       type: event.type,
       subscriptionId: data.id,
     })
@@ -182,7 +182,7 @@ async function applySubscriptionEvent(
   })
   const idsAreOurs = idsOwner === null || idsOwner === tenantId
   if (!idsAreOurs) {
-    console.warn("[billing] subscription ids already belong to another workspace", {
+    logger.warn("Subscription ids belong to another workspace", {
       subscriptionId: data.id,
       claimedBy: idsOwner,
       resolved: tenantId,
@@ -229,7 +229,7 @@ async function applyPaymentAttemptEvent(
 
   const tenantId = await resolveTenantId(data.payer, { customerId: data.payer.id })
   if (tenantId === null) {
-    console.warn("[billing] no tenant for payment attempt", {
+    logger.warn("No tenant for payment attempt", {
       type: event.type,
       paymentId: data.payment_id,
     })
@@ -287,3 +287,4 @@ export async function applyBillingEvent(
 export function isBillingEvent(type: WebhookEvent["type"]): boolean {
   return type.startsWith("subscription") || type.startsWith("paymentAttempt")
 }
+import { logger } from "@sce/observability"

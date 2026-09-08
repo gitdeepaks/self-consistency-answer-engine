@@ -36,7 +36,6 @@ import {
   FeatureUnavailableError,
   PaymentRequiredError,
   QuotaExceededError,
-  describeError,
 } from "./errors.ts"
 
 /**
@@ -182,7 +181,8 @@ export async function guardGlobalBudget(now: Date = new Date()): Promise<GlobalB
   // This log line is the page. Phase 8 alerts on it; until then it is what an
   // operator greps for, so it carries every number needed to decide what to do
   // without opening a database.
-  console.error("[budget] global daily cap reached — engaging kill switch", {
+  metrics.count("sce.budget.tripped", 1)
+  logger.error("Global daily budget reached; engaging kill switch", {
     capMicroCents: budget.capMicroCents,
     spentMicroCents: budget.spentMicroCents,
     since: budget.since,
@@ -217,10 +217,8 @@ async function engageGlobalSwitch(reason: string, now: Date): Promise<GlobalBudg
       metadata: { reason },
     })
     return killSwitch
-  } catch (error: unknown) {
-    console.error("[budget] could not persist the kill switch", {
-      error: describeError(error),
-    })
+  } catch {
+    logger.error("Could not persist budget kill switch")
     return {
       scope: GLOBAL_SPEND_SWITCH,
       engaged: true,
@@ -358,3 +356,4 @@ export async function usageSummaryFor(
     access: billing.access,
   }
 }
+import { logger, metrics } from "@sce/observability"

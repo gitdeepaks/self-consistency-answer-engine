@@ -9,7 +9,7 @@ import {
   syncClerkOrganization,
   syncClerkUser,
 } from "@sce/db"
-import { describeError, memberRoleFromClerk } from "@sce/shared"
+import { memberRoleFromClerk } from "@sce/shared"
 import { Hono } from "hono"
 import { config } from "./env.ts"
 import { applyBillingEvent, isBillingEvent } from "./subscriptions.ts"
@@ -180,10 +180,10 @@ webhooks.post("/clerk", async (c) => {
   let event: WebhookEvent
   try {
     event = await verifyWebhook(c.req.raw, { signingSecret })
-  } catch (error: unknown) {
+  } catch {
     // A bad signature is not a retryable condition — the same bytes will fail
     // the same way — so this is a 400, which tells Svix to stop.
-    console.warn("[webhooks] signature verification failed", { error: describeError(error) })
+    logger.warn("Webhook signature verification failed")
     return c.json({ error: "Invalid signature" }, 400)
   }
 
@@ -209,12 +209,11 @@ webhooks.post("/clerk", async (c) => {
     })
 
     return c.json({ ok: true, applied: event.type })
-  } catch (error: unknown) {
+  } catch {
     // A database failure *is* worth retrying, so this one is a 500 — and the
     // delivery claim is released so the retry is not deduplicated away.
-    console.error("[webhooks] failed to apply event", {
+    logger.error("Failed to apply webhook event", {
       type: event.type,
-      error: describeError(error),
     })
     if (deliveryId !== undefined) await releaseClaim(deliveryId)
     return c.json({ error: "Could not apply event" }, 500)
@@ -232,12 +231,12 @@ async function releaseClaim(deliveryId: string): Promise<void> {
   const { prisma } = await import("@sce/db")
   await prisma.webhookDelivery
     .deleteMany({ where: { id: deliveryId } })
-    .catch((error: unknown) => {
-      console.error("[webhooks] could not release delivery claim", {
+    .catch(() => {
+      logger.error("Could not release webhook delivery claim", {
         deliveryId,
-        error: describeError(error),
       })
     })
 }
 
 export { webhooks }
+import { logger } from "@sce/observability"

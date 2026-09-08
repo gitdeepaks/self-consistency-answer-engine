@@ -16,7 +16,6 @@ import { cancelRun as cancelRunRow } from "@sce/db"
 import { cancellationBus, runBus, runQueue } from "@sce/queue"
 import {
   assignPanel,
-  describeError,
   fingerprint,
   narrowPanel,
   panelSeats,
@@ -29,6 +28,7 @@ import {
   type Run,
 } from "@sce/shared"
 import { config } from "./env.ts"
+import { captureTraceContext, logger, metrics, withSpan } from "@sce/observability"
 
 /**
  * What the API does with a run, now that it does not execute one.
@@ -91,8 +91,8 @@ export interface StartedRun {
 export class EnqueueFailedError extends Error {
   readonly runId: string
 
-  constructor(runId: string, cause: unknown) {
-    super(`Could not enqueue run ${runId}: ${describeError(cause)}`)
+  constructor(runId: string) {
+    super("Could not enqueue run")
     this.name = "EnqueueFailedError"
     this.runId = runId
   }
@@ -159,6 +159,14 @@ export async function startRun(
   input: AskInput,
   options: StartRunOptions = {},
 ): Promise<StartedRun> {
+  return withSpan("run.start", { tenantId }, async () => {
+    const result = await startRunOperation(tenantId, input, options)
+    metrics.count("sce.cache.requests", 1, { outcome: options.bypassCache ? "bypass" : !config.answerCache.enabled ? "disabled" : result.cache })
+    return result
+  })
+}
+
+async function startRunOperation(tenantId: string, input: AskInput, options: StartRunOptions): Promise<StartedRun> {
   const now = new Date()
   const { panel, experimentId, variantId } = choosePanel(tenantId, input, now)
   const { seeds, seats } = seedPanel(panel)
@@ -200,7 +208,8 @@ export async function startRun(
   const cached = await serveFromCache(tenantId, input, marks, create, options)
   if (cached !== null) return cached
 
-  const { run, created } = await createRunIdempotent(create)
+  const { run, created } = await withSpan("persistence.run.create", { tenantId }, () => createRunIdempotent(create))
+  if (created) metrics.count("sce.run.created", 1)
 
   // A retry of the same request must not fan out a second panel — that is the
   // entire point of the idempotency key, and model calls are what it protects.
@@ -215,12 +224,15 @@ export async function startRun(
       "No AI provider is configured. Set OPENAI_API_KEY, ANTHROPIC_API_KEY and/or " +
       "GOOGLE_GENERATIVE_AI_API_KEY — or a single AI_GATEWAY_API_KEY — and restart the worker."
     await failRun(tenantId, run.id, message)
+    metrics.count("sce.run.completed", 1, { outcome: "failed" })
+    metrics.histogram("sce.run.duration", (Date.now() - now.getTime()) / 1000, { outcome: "failed" })
     await bus.publish(tenantId, run.id, { type: "run.failed", runId: run.id, error: message })
     return { run: (await getRun(tenantId, run.id)) ?? run, created: true, cache: "miss" }
   }
 
   try {
     await runQueue().enqueueRun({
+      traceContext: captureTraceContext(),
       tenantId,
       runId: run.id,
       candidateIds: runnable.map((candidate) => candidate.id),
@@ -228,15 +240,19 @@ export async function startRun(
   } catch (error) {
     // The row already exists, so leaving it at PENDING would be a run that
     // nobody is working on and nobody is told about. Fail it loudly instead.
-    const message = `Could not enqueue this run — ${describeError(error)}`
-    await failRun(tenantId, run.id, message).catch(() => {})
+    const message = "Could not enqueue this run"
+    logger.error("Run enqueue failed", { runId: run.id })
+    await withSpan("persistence.run.fail", { runId: run.id }, () => failRun(tenantId, run.id, message)).then(() => {
+      metrics.count("sce.run.completed", 1, { outcome: "failed" })
+      metrics.histogram("sce.run.duration", (Date.now() - now.getTime()) / 1000, { outcome: "failed" })
+    }).catch(() => {})
     await bus
       .publish(tenantId, run.id, { type: "run.failed", runId: run.id, error: message })
       .catch(() => {})
-    throw new EnqueueFailedError(run.id, error)
+    throw new EnqueueFailedError(run.id)
   }
 
-  await markRunQueued(tenantId, run.id)
+  await withSpan("persistence.run.queued", { runId: run.id }, () => markRunQueued(tenantId, run.id))
   await bus.publish(tenantId, run.id, { type: "run.status", runId: run.id, status: "QUEUED" })
 
   return { run: (await getRun(tenantId, run.id)) ?? run, created: true, cache: "miss" }
@@ -276,7 +292,7 @@ async function serveFromCache(
     if (existing !== null) return { run: existing, created: false, cache: cacheOutcomeOf(existing) }
   }
 
-  const hit = await findCachedRun({
+  const hit = await withSpan("persistence.cache.lookup", { tenantId }, () => findCachedRun({
     tenantId,
     key: marks.key,
     scope: marks.scope,
@@ -285,10 +301,10 @@ async function serveFromCache(
     nearDuplicates: config.answerCache.nearDuplicates,
     nearDuplicateOptions: config.answerCache.thresholds,
     poolSize: config.answerCache.poolSize,
-  }).catch((error: unknown) => {
+  })).catch(() => {
     // A cache that is down is a cache that is missing, never a request that
     // fails: the whole feature is an optimisation over doing the work.
-    console.error("[server] answer cache lookup failed", { error: describeError(error) })
+    logger.error("Answer cache lookup failed")
     return null
   })
   if (hit === null) return null
@@ -298,16 +314,18 @@ async function serveFromCache(
   // of one request can both reach this point, and the loser's unique-constraint
   // violation is resolved by `createRunIdempotent` below returning the run the
   // winner created — rather than by a second copy of the cached answer.
-  const run = await createCachedRun({ ...create, sourceRunId: hit.runId }).catch(
-    (error: unknown) => {
-      console.error("[server] could not materialise a cached run", {
+  const run = await withSpan("persistence.run.cache", { tenantId }, () => createCachedRun({ ...create, sourceRunId: hit.runId })).catch(
+    () => {
+      logger.error("Could not materialise cached run", {
         sourceRunId: hit.runId,
-        error: describeError(error),
       })
       return null
     },
   )
   if (run === null) return null
+  metrics.count("sce.run.created", 1)
+  metrics.count("sce.run.completed", 1, { outcome: "complete" })
+  metrics.histogram("sce.run.duration", 0, { outcome: "complete" })
 
   // Published so a client that subscribed before the response landed still sees
   // a terminal event, and so the run's own event log reads the same as a
@@ -341,16 +359,17 @@ export async function cancelRun(
   runId: string,
   reason: string,
 ): Promise<CancelOutcome> {
-  const outcome = await cancelRunRow(tenantId, runId, reason)
+  const outcome = await withSpan("persistence.run.cancel", { runId }, () => cancelRunRow(tenantId, runId, reason))
   if (outcome.outcome !== "canceled") return outcome
+  metrics.count("sce.run.completed", 1, { outcome: "canceled" })
+  metrics.histogram("sce.run.duration", Math.max(0, Date.now() - new Date(outcome.run.createdAt).getTime()) / 1000, { outcome: "canceled" })
 
   await cancelPendingCandidates(tenantId, runId, reason)
   await cancellationBus()
     .request(runId, reason)
-    .catch((error: unknown) => {
-      console.error("[server] failed to publish cancellation", {
+    .catch(() => {
+      logger.error("Failed to publish cancellation", {
         runId,
-        error: describeError(error),
       })
     })
   await runBus().publish(tenantId, runId, { type: "run.canceled", runId, reason })

@@ -34,7 +34,9 @@ import {
 } from "@sce/shared"
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { logger } from "hono/logger"
+import { logger, metrics } from "@sce/observability"
+import { httpTelemetry } from "./telemetry.ts"
+import { isReady } from "./readiness.ts"
 import { streamSSE } from "hono/streaming"
 import {
   actorOf,
@@ -45,7 +47,7 @@ import {
 } from "./auth/middleware.ts"
 import { requestProvenance, TENANT_HEADER } from "./auth/resolve.ts"
 import { clerkConfigured, config } from "./env.ts"
-import { describeError, isAppError } from "./errors.ts"
+import { isAppError } from "./errors.ts"
 import { keys } from "./keys.ts"
 import { assertEntitlement, assertRunAllowed } from "./quota.ts"
 import { rateLimit } from "./ratelimit.ts"
@@ -169,6 +171,11 @@ const api = new Hono<Env>()
       time: new Date().toISOString(),
     }),
   )
+  .get("/ready", async (c) => {
+    const ok = await isReady()
+    c.header("Cache-Control", "no-store")
+    return c.json({ ok }, ok ? 200 : 503)
+  })
 
   /**
    * Which panel members are usable right now, and how they are reached.
@@ -435,6 +442,7 @@ const api = new Hono<Env>()
       header === undefined ? (c.req.valid("query").afterSeq ?? 0) : eventCursorSchema.parse(header)
 
     return streamSSE(c, async (stream) => {
+      metrics.adjust("sce.sse.connections", 1, { route: "/api/runs/:id/events" })
       const controller = new AbortController()
       stream.onAbort(() => {
         controller.abort()
@@ -477,6 +485,7 @@ const api = new Hono<Env>()
           if (isTerminalEvent(message.frame.event)) return
         }
       } finally {
+        metrics.adjust("sce.sse.connections", -1, { route: "/api/runs/:id/events" })
         controller.abort()
       }
     })
@@ -543,7 +552,6 @@ function terminalEventFor(
 const app = new Hono<AuthEnv>()
 
 // Bun sets NODE_ENV=test during `bun test`; request logs would drown the output.
-if (process.env.NODE_ENV !== "test") app.use(logger())
 
 /*
  * First in the chain, ahead of everything that can refuse a request.
@@ -554,6 +562,7 @@ if (process.env.NODE_ENV !== "test") app.use(logger())
  * before any of them is what makes the promise true rather than usually true.
  */
 app.use("*", requestId)
+app.use("*", httpTelemetry)
 /**
  * CORS.
  *
@@ -648,12 +657,10 @@ app.onError((error, c) => {
   if (isAppError(error)) {
     return c.json(error.body(), error.status, error.headers())
   }
-  console.error("[server] unhandled error", {
+  logger.error("Unhandled server error", {
     requestId: requestIdOf(c),
-    path: c.req.path,
-    error: describeError(error),
   })
-  return c.json({ error: describeError(error), code: "internal_error" }, 500)
+  return c.json({ error: "The request could not be completed", code: "internal_error" }, 500)
 })
 
 app.get("/", (c) =>

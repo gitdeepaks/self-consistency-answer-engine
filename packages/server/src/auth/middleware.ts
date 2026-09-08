@@ -51,11 +51,7 @@ function unauthorized(c: Context<AuthEnv>, reason: string): Response {
   // rejects credentials by design, and dozens of expected warnings drown the
   // one that is not expected.
   if (process.env.NODE_ENV !== "test") {
-    console.warn("[auth] rejected request", {
-      path: c.req.path,
-      method: c.req.method,
-      reason,
-    })
+    logger.warn("Authentication rejected")
   }
   return c.json({ error: "Authentication required" }, 401, {
     "WWW-Authenticate": 'Bearer realm="sce", error="invalid_token"',
@@ -142,3 +138,4 @@ export function authorizeResource(
     ? c.json({ error: "Run not found" }, 404)
     : c.json({ error: "Forbidden", reason: decision.reason, permission }, 403)
 }
+import { logger } from "@sce/observability"

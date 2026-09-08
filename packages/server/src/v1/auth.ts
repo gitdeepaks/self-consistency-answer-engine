@@ -40,11 +40,8 @@ export const requireAuth: MiddlewareHandler<AuthEnv> = async (c, next) => {
     // credentials by design and dozens of expected warnings would drown the one
     // that is not expected.
     if (process.env["NODE_ENV"] !== "test") {
-      console.warn("[v1] rejected request", {
+      logger.warn("Authentication rejected", {
         requestId: requestIdOf(c),
-        path: c.req.path,
-        method: c.req.method,
-        reason: result.reason,
       })
     }
 
@@ -77,3 +74,4 @@ export function requirePermission(permission: Permission): MiddlewareHandler<Aut
     await next()
   }
 }
+import { logger } from "@sce/observability"

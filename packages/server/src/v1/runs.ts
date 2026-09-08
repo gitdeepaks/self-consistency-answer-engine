@@ -26,6 +26,7 @@ import {
 } from "@sce/shared"
 import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
+import { metrics } from "@sce/observability"
 import { actorOf, type AuthEnv } from "../auth/middleware.ts"
 import { requirePermission } from "./auth.ts"
 import { requestProvenance } from "../auth/resolve.ts"
@@ -409,6 +410,7 @@ runs.get(
         : eventCursorSchema.parse(header)
 
     return streamSSE(c, async (stream) => {
+      metrics.adjust("sce.sse.connections", 1, { route: "/v1/runs/:id/events" })
       const controller = new AbortController()
       stream.onAbort(() => {
         controller.abort()
@@ -445,6 +447,7 @@ runs.get(
           if (isTerminalEvent(message.frame.event)) return
         }
       } finally {
+        metrics.adjust("sce.sse.connections", -1, { route: "/v1/runs/:id/events" })
         controller.abort()
       }
     })

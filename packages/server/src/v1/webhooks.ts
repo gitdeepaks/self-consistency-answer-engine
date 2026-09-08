@@ -13,7 +13,6 @@ import {
 import { webhookQueue } from "@sce/queue"
 import {
   actorTypeFor,
-  describeError,
   toCursorPage,
   v1PageQuerySchema,
   webhookDeliveryStatusSchema,
@@ -330,10 +329,9 @@ webhooks.openapi(
     // handled.
     await webhookQueue()
       .enqueue({ tenantId: actor.tenantId, deliveryId })
-      .catch((error: unknown) => {
-        console.warn("[v1] replay left for the sweeper", {
+      .catch(() => {
+        logger.warn("Webhook replay left for sweeper", {
           deliveryId,
-          error: describeError(error),
         })
       })
 
@@ -353,3 +351,4 @@ webhooks.openapi(
     return c.json(delivery, 202)
   },
 )
+import { logger } from "@sce/observability"

@@ -1,5 +1,6 @@
 import { statusForErrorCode, toV1Error, type ErrorCode, type V1Error } from "@sce/shared"
 import type { Context } from "hono"
+import { logger } from "@sce/observability"
 import type { ZodError } from "zod"
 import type { AuthEnv } from "../auth/middleware.ts"
 import {
@@ -7,7 +8,6 @@ import {
   ForbiddenError,
   NotFoundError,
   RequestValidationError,
-  describeError,
   isAppError,
 } from "../errors.ts"
 import { requestIdOf } from "../request-id.ts"
@@ -102,11 +102,8 @@ export function renderError(c: Context<AuthEnv>, error: unknown): Response {
     return c.json(toV1Error(error.body(), requestId), error.status, error.headers())
   }
 
-  console.error("[v1] unhandled error", {
+  logger.error("Unhandled v1 error", {
     requestId,
-    path: c.req.path,
-    method: c.req.method,
-    error: describeError(error),
   })
 
   return c.json(

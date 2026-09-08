@@ -429,8 +429,8 @@ function parseEnv(source: Readonly<Record<string, string | undefined>>): ServerE
   // with no ceiling anywhere is one bug away from an unbounded invoice, and
   // that is worth one line on every boot rather than a surprise at month end.
   if (env.GLOBAL_DAILY_BUDGET_MICRO_CENTS === 0 && env.NODE_ENV === "production") {
-    console.warn(
-      "[config] GLOBAL_DAILY_BUDGET_MICRO_CENTS=0 — the install-wide daily spend cap is " +
+    logger.warn(
+      "GLOBAL_DAILY_BUDGET_MICRO_CENTS=0; the install-wide daily spend cap is " +
         "disabled. Per-tenant quotas still apply; nothing bounds total spend.",
     )
   }
@@ -507,3 +507,4 @@ export function clerkConfigured(): boolean {
 }
 
 export { parseEnv as parseServerEnv }
+import { logger } from "@sce/observability"
