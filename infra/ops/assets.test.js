@@ -66,3 +66,41 @@ test('JavaScript assets parse without executing k6 or making requests', () => {
   for (const path of ['infra/load/runs.js', 'infra/ops/structured-logs.js', 'infra/monitoring/check-translation.js'])
     expect(() => transpiler.transformSync(text(path))).not.toThrow();
 });
+
+/*
+ * The four artefacts that describe the same metrics — the instruments the code
+ * may publish, the runbook's contract table, the OTLP translation checker, and
+ * the PromQL in the alerts and dashboards — drift silently: a panel that charts
+ * an instrument nobody emits renders empty, and nothing else complains.
+ */
+const promName = (otlp, unit) => {
+  const base = `sce_${otlp.slice('sce.'.length).replaceAll('.', '_')}`;
+  if (otlp.endsWith('.duration')) return `${base}_seconds`;
+  if (otlp === 'sce.queue.age') return `${base}_seconds`;
+  return unit === 'counter' ? `${base}_total` : base;
+};
+test('instruments, contract table, translation checker and PromQL agree', async () => {
+  const { instrumentNames } = await import('../../packages/observability/src/index.ts');
+  const declared = new Set(instrumentNames);
+
+  const contract = new Map(
+    [...text('doc/runbooks/phase8-operations.md').matchAll(/^\| (sce\.[a-z.]+) \| (\w+)[^|]*\|[^|]*\| (sce_\w+) \|$/gm)]
+      .map(([, otlp, kind, prometheus]) => [otlp, { kind: kind.toLowerCase(), prometheus }]));
+  expect([...contract.keys()].sort()).toEqual([...declared].sort());
+  for (const [otlp, { kind, prometheus }] of contract)
+    expect(prometheus).toBe(promName(otlp, kind === 'counter' ? 'counter' : 'other'));
+
+  // The checker must exercise every declared instrument, or "translation
+  // verified" means only "the instruments I remembered were verified".
+  const checker = text('infra/monitoring/check-translation.js');
+  for (const otlp of declared)
+    expect(checker.includes(`'${otlp.slice('sce.'.length)}'`) || checker.includes(`'${otlp}'`),
+      `${otlp} is never sent by the translation checker`).toBe(true);
+
+  // Every series charted or alerted on must be one the contract produces.
+  const bases = new Set([...contract].map(([otlp, { prometheus }]) => prometheus));
+  const promql = [text('infra/monitoring/alerts.yml'),
+    ...['service', 'provider', 'cost', 'product'].map(n => text(`infra/monitoring/grafana/dashboards/${n}.json`))].join('\n');
+  for (const [, series] of promql.matchAll(/\b(sce_\w+)\b/g))
+    expect(bases.has(series.replace(/_(bucket|count|sum)$/, '')), `${series} is charted but not in the metric contract`).toBe(true);
+});

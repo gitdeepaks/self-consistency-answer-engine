@@ -1,0 +1,73 @@
+# Phase 8.8: the synthetic traffic half of the staging environment.
+#
+# The SLO alerts are ratios. A staging environment nobody asks anything of
+# produces no ratio at all — not a healthy one — so `SCEAvailabilityFastBurn`
+# stays silent whether staging is fine or completely broken, and the burn-rate
+# windows can never be rehearsed before production depends on them. This job is
+# what puts a floor of real requests under them.
+#
+# It costs money: one complete run per firing, through real providers. So it is
+# **inert until deliberately switched on** — set the repository variable
+# STAGING_SYNTHETIC_TRAFFIC to `enabled` when a synthetic tenant, a capped API
+# key and a nonzero GLOBAL_DAILY_BUDGET_MICRO_CENTS are all in place. Unset it
+# and every scheduled firing skips.
+#
+# The `staging-probe` environment is deliberately *not* the `staging` deploy
+# environment: a scheduled run cannot satisfy required reviewers, so it needs
+# its own environment holding only the synthetic key. Never point it at
+# production, and never give it a key with more than run write/read/cancel.
+
+name: staging probe
+
+on:
+  schedule:
+    # Every 30 minutes. Fast enough that the 5m and 30m short-burn windows of
+    # the multiwindow alerts have samples; slow enough to be ~48 runs a day.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never overlap: two probes in flight make the completion histogram a
+  # measurement of contention rather than of staging.
+  group: staging-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: vars.STAGING_SYNTHETIC_TRAFFIC == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging-probe
+    env:
+      SCE_BASE_URL: https://self-consistency-answer-engine-staging.fly.dev
+      SCE_API_KEY: ${{ secrets.SCE_SMOKE_API_KEY }}
+      # Both attestations are true by construction here: the environment holds
+      # only a capped synthetic key, and the job creates exactly one run.
+      ALLOW_PAID_LOAD: "yes"
+      SPEND_CAP_CONFIRMED: "yes"
+      TEST_ID: probe-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: grafana/setup-k6-action@v1
+
+      # Liveness, dependency readiness, then one uncached run end to end —
+      # the same probe a deploy is gated on, so a green deploy and a green
+      # probe mean the same thing.
+      - name: Probe staging
+        run: bash infra/ops/smoke.sh
+
+      # A failing probe is a signal, not an incident on its own: staging shares
+      # provider accounts and can be legitimately mid-deploy. The run's own
+      # status is the record; nothing is rolled back and no spend is resumed
+      # or halted automatically.
+      - name: Report
+        if: failure()
+        run: |
+          printf '%s\n' 'Staging probe failed. Check, in order:' \
+            '  1. Is a deploy in flight? Re-run before investigating.' \
+            '  2. /api/ready (503 = DB or Redis) -> doc/runbooks/phase8-operations.md' \
+            '  3. Provider breakers and spend -> bun run ops spend --days 1' \
+            '  4. Queue age and DLQ -> doc/runbooks/queue.md' >&2

@@ -7,14 +7,18 @@ const attributes = Object.entries({ method: 'POST', route: '/v1/runs', status_cl
   tenant_id: 'MUST_NOT_EXPORT' }).map(([key, value]) => ({ key, value: { stringValue: value } }));
 const point = { startTimeUnixNano: start, timeUnixNano: now, attributes };
 const counters = ['http.requests', 'run.created', 'run.completed', 'provider.calls', 'candidate.completed',
-  'synthesis.completed', 'tokens', 'cost.microcents', 'cache.requests', 'budget.tripped'];
+  'synthesis.completed', 'tokens', 'cost.microcents', 'cache.requests', 'budget.tripped', 'feedback'];
 const histograms = ['http.duration', 'run.duration', 'provider.duration'];
+// Unitless: the exporter appends no `_seconds`, so this ratio keeps its own list.
+const ratios = ['run.confidence'];
 const gauges = ['queue.depth', 'queue.age', 'provider.breaker.open'];
 const metrics = [
   ...counters.map(name => ({ name: `sce.${name}`, sum: { aggregationTemporality: 2, isMonotonic: true,
     dataPoints: [{ ...point, asDouble: 1 }] } })),
   ...histograms.map(name => ({ name: `sce.${name}`, unit: 's', histogram: { aggregationTemporality: 2,
     dataPoints: [{ ...point, count: '1', sum: 1, explicitBounds: [1, 90], bucketCounts: ['1', '0', '0'] }] } })),
+  ...ratios.map(name => ({ name: `sce.${name}`, histogram: { aggregationTemporality: 2,
+    dataPoints: [{ ...point, count: '1', sum: 0.8, explicitBounds: [0.5, 1], bucketCounts: ['0', '1', '0'] }] } })),
   ...gauges.map(name => ({ name: `sce.${name}`, gauge: { dataPoints: [{ ...point, asDouble: 1 }] } })),
   { name: 'sce.sse.connections', sum: { aggregationTemporality: 2, isMonotonic: false,
     dataPoints: [{ ...point, asDouble: 1 }] } },
@@ -30,6 +34,7 @@ if (Number(accepted.partialSuccess?.rejectedDataPoints || 0)) throw new Error('O
 const expected = [
   ...counters.map(n => `sce_${n.replaceAll('.', '_')}_total`),
   ...histograms.flatMap(n => ['bucket', 'count', 'sum'].map(s => `sce_${n.replaceAll('.', '_')}_seconds_${s}`)),
+  ...ratios.flatMap(n => ['bucket', 'count', 'sum'].map(s => `sce_${n.replaceAll('.', '_')}_${s}`)),
   'sce_queue_depth', 'sce_queue_age_seconds', 'sce_provider_breaker_open', 'sce_sse_connections',
 ];
 await Bun.sleep(20000);
