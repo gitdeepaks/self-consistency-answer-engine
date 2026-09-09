@@ -93,8 +93,14 @@ const counterNames: CounterName[] = ["sce.run.created", "sce.run.completed", "sc
 export type CounterName = "sce.run.created" | "sce.run.completed" | "sce.provider.calls" | "sce.candidate.completed" | "sce.synthesis.completed" | "sce.tokens" | "sce.cost.microcents" | "sce.cache.requests" | "sce.http.requests" | "sce.budget.tripped" | "sce.feedback"
 export type HistogramName = "sce.run.duration" | "sce.provider.duration" | "sce.http.duration" | "sce.run.confidence"
 export type GaugeName = "sce.queue.depth" | "sce.queue.age" | "sce.provider.breaker.open"
-const names = new Set<string>([...counterNames, "sce.run.duration", "sce.provider.duration", "sce.http.duration", "sce.run.confidence", "sce.queue.depth", "sce.queue.age", "sce.provider.breaker.open", "sce.sse.connections"])
-const dimensions = new Set(["provider", "operation", "outcome", "direction", "method", "route", "status_class", "queue", "state", "rating"])
+/** Every instrument this process may publish. The dashboards, alerts and the
+ * runbook's metric contract are checked against this list, so an instrument
+ * charted but never declared here fails the build rather than an empty panel. */
+export const instrumentNames: readonly string[] = [...counterNames, "sce.run.duration", "sce.provider.duration", "sce.http.duration", "sce.run.confidence", "sce.queue.depth", "sce.queue.age", "sce.provider.breaker.open", "sce.sse.connections"]
+const names = new Set<string>(instrumentNames)
+// Every name here must also survive the collector's datapoint allowlist in
+// infra/monitoring/collector.yml, or the label is dropped between the two.
+const dimensions = new Set(["provider", "operation", "outcome", "direction", "method", "route", "status_class", "queue", "state"])
 const series = new Map<string, Set<string>>()
 function metricAttributes(name: string, attributes: Attributes = {}): Attributes | null {
   if (!names.has(name)) return null

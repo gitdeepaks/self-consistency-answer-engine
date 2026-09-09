@@ -8,9 +8,9 @@ import {
   queueConfig,
   setLocalRunJobHandlers,
   setLocalWebhookJobHandler,
+  startQueueTelemetry,
 } from "@sce/queue";
 import { initializeTelemetry, shutdownTelemetry, logger } from "@sce/observability";
-import { startQueueTelemetry } from "./queue-telemetry.ts";
 import { workerConfig } from "./env.ts";
 import { runJobHandlers } from "./handlers.ts";
 import { resolveEvaluator, resolvePanel } from "./providers.ts";
@@ -114,7 +114,12 @@ export async function startWorker(): Promise<WorkerHandle> {
   const reaper = startReaper();
   const rollup = startRollup();
   const webhookSweeper = startWebhookSweeper();
-  const queueTelemetry = startQueueTelemetry();
+  /*
+   * The same fleet-wide sampler the API runs, not a second one: the queue
+   * gauges are read with `max by (queue)`, which is only meaningful when every
+   * instance publishes *identical* snapshots under identical labels.
+   */
+  const stopQueueTelemetry = startQueueTelemetry();
 
   announce();
 
@@ -128,7 +133,7 @@ export async function startWorker(): Promise<WorkerHandle> {
        */
       shuttingDown ??= (async () => {
         logger.info("[worker] draining");
-        await queueTelemetry.stop();
+        await stopQueueTelemetry();
         await reaper.stop();
         await rollup.stop();
         await webhookSweeper.stop();

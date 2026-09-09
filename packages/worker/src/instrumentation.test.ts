@@ -68,7 +68,14 @@ beforeEach(() => {
     run.candidates = [settled];
     return settled;
   });
-  spyOn(db, "failRun").mockImplementation(async () => { run.status = "FAILED"; });
+  // `failRun`/`completeRun` return whether *this* call won the terminal
+  // transition; the completion metrics are gated on that, so a mock that
+  // resolves `undefined` silently suppresses every completion count.
+  spyOn(db, "failRun").mockImplementation(async () => {
+    const won = run.status !== "FAILED";
+    run.status = "FAILED";
+    return won;
+  });
   spyOn(db, "dispatchWebhookEvent").mockResolvedValue([]);
 });
 
@@ -114,14 +121,23 @@ test("usage persistence errors log no raw error and do not fabricate cost", asyn
   expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
 });
 
-test("deliveries forward trace context and attempt attributes without prompt data", async () => {
+test("deliveries nest under the delivery span and carry no prompt data", async () => {
   spyOn(db, "getRun").mockResolvedValue(null);
   const spans = spyOn(observation, "withSpan");
   const traceContext = { traceparent: "00-11111111111111111111111111111111-2222222222222222-01" };
   await runJobHandlers.candidate({ ...job, traceContext }, { ...meta, attempt: 2 });
   expect(spans.mock.calls[0]?.[0]).toBe("worker.candidate");
   expect(spans.mock.calls[0]?.[1]).toMatchObject({ "job.attempt": 2, "run.id": job.runId, "candidate.id": candidate.id });
-  expect(spans.mock.calls[0]?.[3]).toEqual(traceContext);
+  /*
+   * The carrier is extracted exactly once per delivery, by the `queue.*` span
+   * that `@sce/queue` opens around this handler. Passing it a second time here
+   * would re-parent `worker.candidate` onto the *enqueue* span, making it a
+   * sibling of the delivery span that wraps it in wall-clock time — same trace,
+   * wrong flame graph. Inheriting the ambient context is what keeps the run's
+   * trace nested API -> enqueue -> delivery -> worker -> provider.
+   */
+  expect(spans.mock.calls[0]?.[3]).toBeUndefined();
+  expect(JSON.stringify(spans.mock.calls[0]?.[1])).not.toContain("PRIVATE");
 });
 
 test("cached or already failed runs do not count worker completions", async () => {
@@ -172,7 +188,11 @@ test("redelivery resumes persisted synthesis without another provider call or sy
     agreements: [], disagreements: [], reviews: [], confidence: 0.8,
     calibratedConfidence: null, latencyMs: 10, inputTokens: 11, outputTokens: 22,
   };
-  spyOn(db, "completeRun").mockImplementation(async () => { run.status = "COMPLETE"; });
+  spyOn(db, "completeRun").mockImplementation(async () => {
+    const won = run.status !== "COMPLETE";
+    run.status = "COMPLETE";
+    return won;
+  });
   const calls = spyOn(observation.metrics, "count");
   await runJobHandlers.synthesis(job, meta);
   await runJobHandlers.synthesis(job, meta);

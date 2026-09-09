@@ -275,6 +275,11 @@ async function synthesize(
       outputTokens: usage.outputTokens ?? null,
     }));
     metrics.count("sce.synthesis.completed", 1, { outcome: "success" });
+    // The distribution the Phase 7 calibration work is checked against: the raw
+    // model-reported number, recorded once per synthesis that was actually
+    // produced. A resumed delivery reuses the persisted row and re-records
+    // nothing, so the histogram counts syntheses, not attempts.
+    metrics.histogram("sce.run.confidence", synthesis.confidence);
     return synthesis;
   } catch (error) {
     // Storage/breaker failures belong to queue retry, not provider health.

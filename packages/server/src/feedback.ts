@@ -1,6 +1,7 @@
 import { zValidator } from "@hono/zod-validator"
 import { feedbackFor, getRun, listFeedback, submitFeedback, triageFeedback } from "@sce/db"
 import { feedbackQueueQuerySchema, submitFeedbackInputSchema, triageFeedbackInputSchema } from "@sce/shared"
+import { metrics } from "@sce/observability"
 import { Hono } from "hono"
 import { actorOf, requirePermission, type AuthEnv } from "./auth/middleware.ts"
 
@@ -66,6 +67,14 @@ const feedback = new Hono<AuthEnv>()
         ...c.req.valid("json"),
       })
       if (submitted === null) return c.json({ error: "Run not found" }, 404)
+
+      // Global counts only — the run, the tenant and the person behind the
+      // verdict stay out of the label set. Who said what is answered from the
+      // triage queue, which is authenticated; the metric answers "is anyone
+      // pressing these buttons, and which way".
+      metrics.count("sce.feedback", 1, {
+        outcome: c.req.valid("json").rating === "up" ? "positive" : "negative",
+      })
 
       return c.json({
         feedback: await feedbackFor({ tenantId: actor.tenantId, runId, userId: actor.userId }),
