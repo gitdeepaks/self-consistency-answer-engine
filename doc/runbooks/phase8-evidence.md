@@ -5,21 +5,22 @@
 | Item | Status | Evidence / Remaining Gate |
 | --- | --- | --- |
 | Local monitoring Compose, collector, Prometheus, Grafana, Tempo, Loki | Implemented, live startup pending | Versioned configs in infra/monitoring; no Docker daemon available during implementation |
-| Four dashboard provisioning assets | Implemented, rendering pending | service/provider/cost/product JSON; static parsing only |
+| Four dashboard provisioning assets | Implemented, rendering pending | service/provider/cost/product JSON; static parsing, and every charted series is checked against the metric contract |
 | Telemetry contract and OTLP translation | Fixture/checker implemented, live verification pending | Run `bun run infra/monitoring/check-translation.js` against local stack; then separately verify runtime-originated data |
-| Runtime instrument integration | Separate agent's work, not verified here | Confirm per-process service.instance.id, units, terminal durations including queue wait, zero gauges, bounded label values |
+| Runtime instrument integration | Implemented and unit-tested, live emission pending | `@sce/observability` wired into API, queue, worker; one sampler (`startQueueTelemetry`) shared by API and worker; `bun test infra/ops/assets.test.js` pins instruments, contract table, checker and PromQL to each other. Still confirm against a live stack: per-process `service.instance.id`, terminal durations including queue wait, zero gauges |
 | Sanitized structured log ingestion | Implemented, end-to-end retention/redaction pending | Opt-in finite-enum bridge plus collector allowlist; no raw console scraping |
 | SLO/queue/DLQ/breaker/budget alerts | Implemented, PromQL engine validation/firing drills pending | Every alert has a repository-relative runbook link; no paging integration |
 | Steady/burst load | Implemented, execution unmeasured | Explicit opt-in and 1..20 shared iterations; completion assertions |
 | Chaos | Implemented, not executed | Isolated Compose and restoration traps; application recovery must be asserted separately |
 | Staging parity | Implemented, static equality check | No Fly app/resource provisioning or remote checks performed |
+| Staging synthetic traffic | Implemented, disabled by default | `staging-probe` workflow; one paid run per 30 min once `STAGING_SYNTHETIC_TRAFFIC=enabled` and the `staging-probe` environment exists. Until then the SLO alerts have no denominator on staging |
 | Deploy/rollback workflow | Implemented, staging rehearsal pending | Manual environment gates, pre-deploy old digest, trap before rollout, smoke and rollback verification |
 | Migration compatibility | Approval gate only, pending evidence | Test old image on migrated staging schema before approving |
 | Capacity claims | **UNMEASURED** | No throughput, latency, error rate, cost or recovery measurements are asserted |
 
 ## Local Results
 
-Implementation-time local checks passed: dashboard/YAML/TOML parsing and staging parity, loopback exposure and runbook-link checks, JavaScript parsing, Bash syntax, and both Compose `config --quiet` checks. Mocked Fly/k6/curl tests exercise successful deployment, partial mutation followed by deploy failure, post-deploy smoke failure, rollback failure, and dependency-readiness failure. These mocks make no remote requests and do not prove Fly's live response shape or runtime recovery. See the final implementation report for the exact test count.
+Implementation-time local checks passed: dashboard/YAML/TOML parsing and staging parity, loopback exposure and runbook-link checks, metric-contract agreement across instruments/table/checker/PromQL, JavaScript parsing, Bash syntax, and both Compose `config --quiet` checks. Mocked Fly/k6/curl tests exercise successful deployment, partial mutation followed by deploy failure, post-deploy smoke failure, rollback failure, and dependency-readiness failure. These mocks make no remote requests and do not prove Fly's live response shape or runtime recovery. See the final implementation report for the exact test count.
 
 Docker CLI/Compose are installed, but the daemon socket is unavailable. k6, promtool and actionlint are not installed locally. Consequently no image build, container startup, actual OTLP translation, PromQL/OTTL execution, dashboard rendering, paid request, chaos injection or remote deployment was performed. All staging/capacity gates above remain pending.
 

@@ -25,6 +25,8 @@ bun run db:status
 SCE_SEED_FORCE=1 bun run db:seed
 ```
 
+`.github/workflows/staging-probe.yml` is the synthetic-traffic half of the staging environment, and it is **inert until switched on**: set the repository variable `STAGING_SYNTHETIC_TRAFFIC` to `enabled` only after a synthetic tenant, a capped API key and a nonzero `GLOBAL_DAILY_BUDGET_MICRO_CENTS` exist on both process groups. It then creates one real run every 30 minutes (~48/day, paid) through `infra/ops/smoke.sh`. Its secrets live in a separate `staging-probe` GitHub Environment rather than `staging`, because a scheduled run cannot satisfy required reviewers; give that environment only `SCE_SMOKE_API_KEY`, scoped to run write/read/cancel, and never a production URL. Without this traffic the SLO alerts have no denominator — an empty staging burns no error budget whether it is healthy or entirely broken — so the burn-rate windows cannot be rehearsed before production depends on them. Unset the variable to stop the spend; a failing probe is a signal to investigate, not an automatic halt or rollback.
+
 Seeding is a deliberate privileged exception: it creates demo data and an unmetered demo plan. It does not create realistic load, prove providers work, or replace synthetic identity/API-key setup. Never use `SCE_SEED_FORCE=1` against production. Use existing key creation UI and auth runbooks for a dedicated synthetic workspace. Keep payloads innocuous and unique per test to avoid cache-only readiness checks.
 
 ## Deploy And Rollback

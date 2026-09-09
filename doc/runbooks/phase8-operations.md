@@ -2,7 +2,7 @@
 
 ## Scope
 
-Optional local assets, not a deployed monitoring service. No runtime package or root package changes belong to this work. Runtime instrumentation is a separate integration. See [evidence ledger](phase8-evidence.md) for what is actually verified.
+The monitoring stack described here is optional local assets, not a deployed service. Runtime instrumentation (`@sce/observability`, wired into the API, queue and worker) **is** landed and emits against the contract below; what remains unverified is everything that needs a live stack or a real environment. See the [evidence ledger](phase8-evidence.md) for exactly which line is which.
 
 ## Telemetry
 
@@ -33,7 +33,8 @@ Collector 0.123.0 Prometheus exporter uses `add_metric_suffixes: true`: dots bec
 | sce.http.duration | Histogram / s | method, route, status_class | sce_http_duration_seconds |
 | sce.run.created | Counter / unset | none | sce_run_created_total |
 | sce.run.completed | Counter / unset | outcome | sce_run_completed_total |
-| sce.run.duration | Histogram / s | none | sce_run_duration_seconds |
+| sce.run.duration | Histogram / s | outcome | sce_run_duration_seconds |
+| sce.run.confidence | Histogram / unset (0..1) | none | sce_run_confidence |
 | sce.provider.calls | Counter / unset | provider, operation, outcome | sce_provider_calls_total |
 | sce.provider.duration | Histogram / s | provider, operation, outcome | sce_provider_duration_seconds |
 | sce.candidate.completed | Counter / unset | outcome | sce_candidate_completed_total |
@@ -41,17 +42,18 @@ Collector 0.123.0 Prometheus exporter uses `add_metric_suffixes: true`: dots bec
 | sce.tokens | Counter / unset | provider, direction | sce_tokens_total |
 | sce.cost.microcents | Counter / unset | provider | sce_cost_microcents_total |
 | sce.cache.requests | Counter / unset | outcome | sce_cache_requests_total |
-| sce.sse.connections | UpDownCounter / unset | none | sce_sse_connections |
+| sce.feedback | Counter / unset | outcome | sce_feedback_total |
+| sce.sse.connections | UpDownCounter / unset | route | sce_sse_connections |
 | sce.queue.depth | Gauge / unset | queue, state | sce_queue_depth |
-| sce.queue.age | Gauge / s | queue | sce_queue_age_seconds |
+| sce.queue.age | Gauge / s | queue, state (`wait`) | sce_queue_age_seconds |
 | sce.provider.breaker.open | Gauge / unset | provider | sce_provider_breaker_open |
 | sce.budget.tripped | Counter / unset | none | sce_budget_tripped_total |
 
-HTTP routes must be templates (e.g. `/v1/runs/:id`), never IDs, URLs or query strings. Status classes are `2xx`, `3xx`, `4xx`, `5xx`. Use finite provider/operation/outcome enums. One microcent is 1/100,000,000 USD. Queue gauges must publish zero when empty and one fleet-wide source or identical snapshots per instance; dashboards use `max`, not `sum`, for shared queue data. Breaker state is per-process; alert on `max` across the fleet. DLQ growth measures **net** growth, not all arrivals if jobs are replayed/purged within the same window.
+`sce.run.confidence` is the only unitless histogram, so the exporter appends no `_seconds`: its series are `sce_run_confidence_{bucket,count,sum}` over boundaries 0..1 in tenths. It records the raw model-reported confidence once per produced synthesis — not measured accuracy, and not once per attempt. `sce.feedback` counts accepted submissions, one per POST, so a person who revises a verdict is counted twice; the unique-user tally lives in the feedback table, not here. HTTP routes must be templates (e.g. `/v1/runs/:id`), never IDs, URLs or query strings. Status classes are `2xx`, `3xx`, `4xx`, `5xx`. Use finite provider/operation/outcome enums. One microcent is 1/100,000,000 USD. Queue gauges must publish zero when empty and one fleet-wide source or identical snapshots per instance; dashboards use `max`, not `sum`, for shared queue data. Both the API and the worker run the *same* sampler (`startQueueTelemetry` in `@sce/queue`) for exactly that reason — a second implementation with its own label vocabulary makes `max by (queue)` silently blind to half the fleet. Breaker state is per-process; alert on `max` across the fleet. DLQ growth measures **net** growth, not all arrivals if jobs are replayed/purged within the same window.
 
 Set a stable, unique `service.instance.id` on **each process** before multi-replica rollout. Prometheus exporter maps `service.name` to `job` and `service.instance.id` to `instance`; `honor_labels` preserves them. Without the instance ID, independent cumulative counters can collide. Runtime integration must confirm this; collector cannot infer the originating process behind a shared OTLP listener.
 
-Use explicit duration boundaries including exactly 90 seconds (recommended: .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 90, 120, 300). The integration checker sends all 17 synthetic instruments and asserts actual translated names, histogram suffixes, the 90s bucket and tenant-label removal through Prometheus. It is **not** evidence that production instrumentation emits those instruments. Run it only on the local stack; synthetic samples remain until retention/volume cleanup.
+Use explicit duration boundaries including exactly 90 seconds (recommended: .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 90, 120, 300). The integration checker sends all 19 synthetic instruments and asserts actual translated names, histogram suffixes, the 90s bucket and tenant-label removal through Prometheus. It is **not** evidence that production instrumentation emits those instruments. Run it only on the local stack; synthetic samples remain until retention/volume cleanup.
 
 ### Logs And Privacy
 
@@ -84,6 +86,42 @@ Check queue age and provider latency, then `bun run dlq depth`. Use [queue runbo
 ## Breaker
 
 Identify the provider in the alert, compare call outcomes/latencies and check its status privately. Inspect configured timeouts and bulkhead limits; avoid immediate fleet-wide retries or DLQ replay. A candidate/provider failure is not necessarily a DLQ entry. Follow [queue](queue.md) and [cost](cost.md). If spending is unsafe, `bun run ops halt --reason "provider incident"`; only `bun run ops resume` after operator approval and a bounded smoke. Confirm breaker gauge returns to zero and provider calls recover.
+
+## Budget
+
+`SCEBudgetTripped` counts trips of the global daily spend guard. The counter is a **process-lifetime latch**: it does not decay, and a nonzero total means the guard fired at least once since the API process started, not that spend is currently blocked. Read the persisted ledger, never the metric, for the actual position: `bun run ops spend --days 1 --limit 20` for today by tenant, `bun run ops spend --days 7` for the trend. The cost dashboard's "Estimated USD" panel is a sampled telemetry window and is not a billing record.
+
+Decide whether the trip is legitimate spend or an incident. Legitimate: a large tenant, a launch, a backfill — raise `GLOBAL_DAILY_BUDGET_MICRO_CENTS` on **both** the API and worker process groups (they enforce independently) after an explicit approval, and record the new figure. Illegitimate: a runaway loop, a leaked key, an unpriced model id inflating cost math. Check for an unpriced model first, because it produces a spend figure that is wrong rather than large:
+
+```bash
+bun run ops spend --days 1 --limit 20        # by tenant, persisted, authoritative
+bun run dlq depth                            # a retry storm inflates spend
+```
+
+If spend must stop now, `bun run ops halt --reason "budget incident"`; this refuses new runs and skips queued candidates without discarding accepted work. Resume only after the cause is named and an operator approves: `bun run ops resume`, then one bounded smoke run. Follow [cost](cost.md) for quota, plan and invoice questions, and [queue](queue.md) if a retry storm is the driver. Clear the alert by confirming the ledger has stopped growing; the latched counter itself only resets when the process restarts, so do not treat a persistently nonzero total as an unresolved incident once the ledger is flat.
+
+## Database Failover
+
+Postgres is the only stateful dependency whose loss stops both admission and completion — Redis loss fails enqueue loudly (see [queue](queue.md)), a provider outage opens a breaker, but a database that is gone makes `/api/ready` return 503 on every replica. This is the *failover* path: the primary is unhealthy and a replica or a restored instance must take over. Restoring lost data is a different procedure, in [restore](restore.md), and the two must not be confused — failing over does not recover rows that were never replicated.
+
+Confirm the scope before acting. Dashboard: **SCE Service** (POST /v1/runs status classes, run p95, queue age). `SCEAvailabilityFastBurn` plus `SCEQueueAge` climbing together, with breakers closed, points at persistence rather than a provider.
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' "$SCE_BASE_URL/api/ready"   # 503 = a dependency is down
+flyctl postgres list
+flyctl status --app "$FLY_APP"
+```
+
+Failover, in order:
+
+1. **Stop the spend before the storage.** `bun run ops halt --reason "database failover"`. Workers that cannot persist a candidate still pay the provider for it; the halt is what makes the outage cost nothing beyond the calls already in flight.
+2. **Promote.** Follow the managed provider's promotion procedure for the standby in the primary region. Note the promotion timestamp — it is the boundary for step 5.
+3. **Repoint and restart.** Set `DATABASE_URL` to the new primary as a secret on **both** process groups, then restart them so the pool reconnects. Do not edit it in `fly.toml`; connection strings are secrets.
+4. **Verify before resuming.** `bun run db:status` must report the migration history at head against the new primary — a standby promoted mid-migration will not be. Then `/api/ready` must return 200 on every replica, not just one.
+5. **Reconcile the gap.** Any run accepted after the last replicated write and before promotion is now orphaned: its row is missing while its queue job may still exist. Drain and inspect with `bun run dlq depth`, then reap stuck runs; re-enqueueing against a rolled-back row double-charges, so prefer failing those runs and telling the affected tenants.
+6. **Resume.** `bun run ops resume`, then one bounded smoke run (`infra/ops/smoke.sh`) before declaring the incident over.
+
+Afterwards: rebuild a standby before closing the incident — a promoted primary with no replica is a single point of failure, not a resolution. Record the promotion timestamp, the reconciliation decision per affected run, and the observed data-loss window in the incident notes, and check the window against the RPO claimed in [restore](restore.md).
 
 ## Local Drills
 
