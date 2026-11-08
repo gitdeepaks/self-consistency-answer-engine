@@ -62,3 +62,19 @@ process.env.RATE_LIMIT_ENABLED ??= "false";
  * `??=` so a suite (or a developer) can still turn it on deliberately.
  */
 process.env.ANSWER_CACHE_ENABLED ??= "false";
+
+/**
+ * Placeholder provider keys under `bun test`.
+ *
+ * Starting a run seats each provider as PENDING only when its key is set; with
+ * none, the run fails at once and never reaches the queue. A developer's `.env`
+ * usually has real keys, so the HTTP suites pass locally and fail on a clean CI
+ * runner. No suite calls a provider — the queue is stubbed, and the provider
+ * tests pass their own env — so a placeholder is enough.
+ *
+ * `||=` so real keys in the environment still win, and an empty one is
+ * treated as missing.
+ */
+process.env.OPENAI_API_KEY ||= "test-openai-key";
+process.env.ANTHROPIC_API_KEY ||= "test-anthropic-key";
+process.env.GOOGLE_GENERATIVE_AI_API_KEY ||= "test-google-key";
