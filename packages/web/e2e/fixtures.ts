@@ -11,7 +11,7 @@ import { test as base, type Page } from "@playwright/test"
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787"
-const API_KEY = process.env.SCE_API_KEY ?? null
+const API_KEY = process.env.SCE_API_KEY || null
 
 /** Is there a backend to seed against? Specs skip themselves when there is not. */
 export const canSeed = API_KEY !== null
