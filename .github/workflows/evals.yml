@@ -79,7 +79,15 @@ jobs:
     name: Grade the golden set
     # Never on a pull request: this job spends money, and a fork's pull request
     # must not be able to spend it.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    #
+    # The schedule is inert until deliberately switched on: set the repository
+    # variable EVALS_NIGHTLY to `enabled` once the `evals` environment holds
+    # EVALS_BASE_URL, EVALS_API_KEY and the judge provider keys. Until then
+    # every scheduled firing skips instead of failing. A manual dispatch always
+    # runs, since someone asked for it.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && vars.EVALS_NIGHTLY == 'enabled')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: evals

@@ -75,6 +75,11 @@ jobs:
       - name: Generate the Prisma client
         run: bun run db:generate
 
+      # `@sce/sdk` resolves to its gitignored `dist/`, so the web app can't
+      # typecheck or build against it until it has been built.
+      - name: Build the SDK
+        run: bun run --filter @sce/sdk build
+
       # Deploy rather than push: this is the same command production runs, so a
       # migration that only works via `db push` cannot pass.
       - name: Apply migrations
@@ -108,6 +113,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun run db:generate
+      - run: bun run --filter @sce/sdk build
 
       - name: Install the browser
         run: bunx playwright install --with-deps chromium
@@ -147,6 +153,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun run db:generate
+      - run: bun run --filter @sce/sdk build
       - run: bun run --filter @sce/web build
 
       - name: Start the app
