@@ -16,8 +16,8 @@ import { expect, test } from "./fixtures"
  * share it, see it billed — is what this file walks, in order.
  */
 
-const EMAIL = process.env.E2E_USER_EMAIL ?? null
-const PASSWORD = process.env.E2E_USER_PASSWORD ?? null
+const EMAIL = process.env.E2E_USER_EMAIL || null
+const PASSWORD = process.env.E2E_USER_PASSWORD || null
 const configured = EMAIL !== null && PASSWORD !== null
 
 test.describe("signed in", () => {
