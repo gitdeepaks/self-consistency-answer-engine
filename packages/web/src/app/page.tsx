@@ -54,7 +54,7 @@ export default async function HomePage(): Promise<ReactElement> {
         </Link>
       </div>
 
-      <p className="mt-10 text-sm text-ink-faint">
+      <p className="mt-10 text-sm text-ink-muted">
         Prefer a terminal? The same engine ships as <code className="font-mono">sce</code>, a
         keyboard-driven client that streams the panel side by side.
       </p>
